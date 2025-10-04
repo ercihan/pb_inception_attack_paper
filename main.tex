@@ -55,21 +55,35 @@
   tabsize          = 4,
 }
 
-\title{Speculative-Execution Attacks and Implications for Confidential Computing}
+\title{A practical PB Inception Attack and Implications for Confidential Computing}
 \author{Kaya Ercihan, Jonathan Müller}
-\date{28.07.2025}
+\date{23.12.2025}
 
 \begin{document}
 \bibliographystyle{IEEEtranS}  % IEEE, sorted
 \maketitle
 
+% ##############################################################################################
+% 
+%   Structure of documentation
+% 
+% ##############################################################################################
+%\section{Intoduction}
+%\section{Related Work}
+%\subsection{Contribution} %
+%\section{Methodology}
+%\section{Experiments}
+%\section{Results and Discussion}
+%\section{Future Work}
+%\section{Conclusion}
+%\section{Appendix}
+
 \section*{Abstract}
 ToDo
 
-\section{Term Details}
+\section{Intoduction}
 ToDo
-
-\section{Use Case: Confidential Computing}
+\subsection{Use Case: Confidential Computing}
 Confidential computing encrypts memory (including instructions and data) using keys managed by the AMD Secure Processor (ASP). Secure Encrypted Virtualization (SEV) encrypts the entire VM memory, so instructions and data remain encrypted while stored in RAM. Only the CPU decrypts them on-the-fly during execution.
 
 SEV-SNP adds integrity protection, ensuring that the hypervisor cannot tamper with or remap the VM's memory. This prevents attacks like memory snooping or VM breakout, even from a compromised hypervisor.
@@ -77,6 +91,34 @@ SEV-SNP adds integrity protection, ensuring that the hypervisor cannot tamper wi
 The ASP manages the encryption keys and secure context but does not perform decryption itself. Instead, decryption happens within the CPU, tightly integrated into the memory controller and instruction pipeline. Therefore, memory remains encrypted at rest and in transit, and is only decrypted in the CPU, for the correct VM.
 \clearpage
 
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{Speculative execution and Spectre lineage.} Modern out-of-order processors predict control flow to keep pipelines full, enabling transient execution along mispredicted paths. The Spectre family formalized practical exploitation of such mispredictions and showed cross-domain leaks via microarchitectural side channels \cite{kocher2018spectre}. Since then, a broad line of work has mapped and exploited branch-prediction structures (PHT/BTB/RSB) across privilege and context boundaries.
+
+\paragraph{RSB- and return-centric attacks.}
+Early RSB-focused works (SpectreRSB and ret2spec) showed how return-target prediction can be subverted even without direct control over indirect branches \cite{koruyeh2018spectrersb,maisuradze2018ret2spec}. RETbleed systematized cross-privilege return hijacking and demonstrated end-to-end leaks on AMD and Intel by steering returns via BTB collisions; it also evaluated practical kernel mitigations (e.g. \texttt{jmp2ret}, RSB clearing/stuffing, and retpoline interactions) \cite{wikner2022retbleed}.
+
+\paragraph{AMD Zen microarchitectures, BTC, and early speculation.}
+On AMD Zen, Branch Type Confusion (BTC) and PHANTOM speculation reveal that prediction can occur very early in the frontend, including on non-branch instructions, increasing attack surface and interacting with return prediction \cite{amd2022btc,wikner2023phantom}. AMD introduced controls like \texttt{SuppressBPOnNonBr} and guidance for managing speculation across Zen generations \cite{amd2022btc,amd_software_spec}.
+
+\paragraph{INCEPTION / SRSO.}
+\emph{INCEPTION} (a.k.a.\ Speculative Return Stack Overflow, SRSO, CVE-2023-20569) shows that attackers can inject return predictions, creating long transient windows to disclose kernel data on all AMD Zen generations, despite deployed defenses \cite{trujillo2023inception,nvd_cve_2023_20569,amd_sb7005,linux_srso_doc}. Vendor whitepapers and kernel documentation discuss mitigations (IBPB-on-entry, RSB stuffing, untrained returns), trade-offs, and microcode dependencies on different Zen generations \cite{amd_srso_whitepaper,linux_srso_doc}.
+
+\paragraph{IBPB, post-barrier speculation, and PB-Inception.}
+A central defense for cross-context Spectre-BTI is the Indirect Branch Predictor Barrier (IBPB). However, the correctness of IBPB relies on microcode semantics and how software applies it. Recent analysis shows that IBPB does not fully flush all alternate return predictors. For Intel Golden/Raptor Cove, PB-RRSBA enables stale IP-based return predictions post-IBPB; for AMD Zen1(+)/Zen2, IBPB-on-entry still leaves the return predictor retaining poisoned entries learned just before the barrier, enabling PB-Inception to leak arbitrary kernel memory \cite{wikner2025breaking}. The work proposes disabling exploitable RRSBA predictions via a chicken bit on affected Intel CPUs, and hardening Linux on AMD by stuffing the RSB when using IBPB-on-entry to prevent post-barrier return hijacks \cite{wikner2025breaking}. These findings connect to earlier vendor advisories on post-barrier return prediction (PBRSB) and RRSBA enumeration/mitigation \cite{intel_pbrsb,intel_rrsba}.
+
+\paragraph{System response and current practice.}
+Linux now documents SRSO/RSB mitigations (IBPB strategies, untrained returns, RSB stuffing and conditions for applying them) and their performance-security tradeoffs. The effectiveness varies by microarchitecture and available microcode \cite{linux_srso_doc,linux_rsb_doc}. On AMD Zen3/4, IBPB may flush IP-based predictors to mitigate INCEPTION-like behaviors, while Zen1/2 require software RSB stuffing on entry when IBPB is used \cite{wikner2025breaking,amd_srso_whitepaper}.
+
+\paragraph{Takeaway.}
+For AMD Zen, the return predictor remains a privileged choke point: pre-barrier mistraining plus post-barrier retention under specific IBPB configurations yields PB-Inception-style cross-privilege leaks. Comprehensive defenses require both correct barrier semantics in microcode \emph{and} software-side RSB sanitization at the right points in the control-flow transitions \cite{wikner2025breaking,trujillo2023inception,linux_srso_doc}.
+
+\section{Contribution}
+ToDo
+
+\section{Methodology}
+ToDo
 \subsection{Detecting CC Support}
 If a CPU supports confidential computing can easily be verified with the flags in lscpu (Flags: "sev", "sev-es", "sev-snp"):
 
@@ -117,10 +159,10 @@ rdseed adx smap clflushopt clwb sha_ni xsaveopt xsaves xgetbv1
 clzero xsaveerptr arat npt nrip_save umip vaes sev sev-es sev-snp
 \end{lstlisting}
 
-\section{How to circumvent confidential computing?}
+\subsection{How to circumvent confidential computing?}
 There are multiple ways to circumvent CC with this new kind of vulnerability. One is that the attacker crafts special payloads to train the CPU in a way to return in the victim's process to a wrong memory address. This would circumvent the CC measures because the memory, which stays encrypted with the instructions within cannot be read directly but the process which executes instructions, only decrypted in the CPU, will be running in an attacker controllable space and so the information output of the data within the instructions is than in an unencrypted attacker controllable space.
 
-\section{Proof of Concept: RRSBA Poisoning -> valid till Linux kernel < 6.9 or missing flags}
+\subsection{Proof of Concept: RRSBA Poisoning -> valid till Linux kernel < 6.9 or missing flags}
 Post‑Barrier Return Stack Buffer Alternate (PB‑RRSBA) attacks abuse the fallback “alternate” return predictor that takes over when the architectural RSB under‑flows. Intel now exposes two architectural bits in \texttt{IA32\_SPEC\_CTRL} to disable that predictor bit 5 \texttt{RRSBA\_DIS\_U} (user mode) and bit 6 \texttt{RRSBA\_DIS\_S} (kernel mode). If either bit is 1 the predictor is gated off for that privilege level, closing PB‑RRSBA.
 
 Kernel support for programming those bits first appeared in Linux 6.9 (May 2024).  The x86 tree gained \texttt{spectre\_v2=rrsba\_disable}, and the scheduler now sets the bits automatically when the CPU advertises \texttt{RRSBA\_CTRL}. Earlier kernels leave both bits at their reset value 0, so the predictor stays enabled even after an IBPB.\\
@@ -158,9 +200,19 @@ neo@morpheus:~$
 # RRSBA not mentioned -> kernel < 6.9 (or old microcode) so RRSBA remains enabled
 \end{lstlisting}
 
+\section{Experiments}
+ToDo
+
+\section{Results and Discussion}
+ToDo
+
+\section{Future Work}
+ToDo
 
 \section{Conclusion}
 ToDo
+
+
 
 \bibliography{refs}
 \end{document}

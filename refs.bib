@@ -1,23 +1,121 @@
 \begin{thebibliography}{
 
-@article{wikner25,
-    author  = "Johannes Wikner and Kaveh Razavi",
-    title   = "Breaking the {B}arrier: {P}ost-{B}arrier {S}pectre {A}ttacks",
-    year    = "2025",
-    journal = "IEEE Symposium on Security and Privacy",
-    volume  = "",
-    number  = "",
-    pages   = "",
-    url     = "https://comsec.ethz.ch/wp-content/files/ibpb_sp25.pdf"
+@misc{kocher2018spectre,
+  title        = {Spectre Attacks: Exploiting Speculative Execution},
+  author       = {Paul Kocher and Daniel Genkin and Daniel Gruss and Werner Haas and Mike Hamburg and Moritz Lipp and Stefan Mangard and Thomas Prescher and Michael Schwarz and Yuval Yarom},
+  year         = {2018},
+  eprint       = {1801.01203},
+  archivePrefix= {arXiv},
+  primaryClass = {cs.CR},
+  url          = {https://arxiv.org/abs/1801.01203}
 }
 
-@article{kernel,
-    author  = "Kernel.org",
-    title   = "SpectreRSB",
-    year    = "2018",
-    journal = "",
-    volume  = "",
-    number  = "",
-    pages   = "",
-    url     = "https://docs.kernel.org/admin-guide/hw-vuln/rsb.html"
+@inproceedings{koruyeh2018spectrersb,
+  title        = {Spectre Returns! Speculation Attacks using the Return Stack Buffer},
+  author       = {Esmaeil Mohammadian Koruyeh and Khaled N. Khasawneh and Chengyu Song and Nael Abu-Ghazaleh},
+  booktitle    = {USENIX WOOT},
+  year         = {2018},
+  url          = {https://www.usenix.org/system/files/conference/woot18/woot18-paper-koruyeh.pdf}
+}
+
+@inproceedings{maisuradze2018ret2spec,
+  title        = {ret2spec: Speculative Execution Using Return Stack Buffers},
+  author       = {Giorgi Maisuradze and Christian Rossow},
+  booktitle    = {ACM CCS},
+  year         = {2018},
+  url          = {https://christian-rossow.de/publications/ret2spec-ccs2018.pdf}
+}
+
+@inproceedings{wikner2022retbleed,
+  title        = {RETbleed: Arbitrary Speculative Code Execution with Return Instructions},
+  author       = {Johannes Wikner and Kaveh Razavi},
+  booktitle    = {31st USENIX Security Symposium},
+  year         = {2022},
+  url          = {https://www.usenix.org/system/files/sec22-wikner.pdf}
+}
+
+@inproceedings{wikner2023phantom,
+  title        = {Phantom: Exploiting Decoder-detectable Mispredictions},
+  author       = {Johannes Wikner and Dani{\"e}l Trujillo and Kaveh Razavi},
+  booktitle    = {56th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO '23)},
+  year         = {2023},
+  doi          = {10.1145/3613424.3614275},
+  url          = {https://comsec.ethz.ch/wp-content/files/phantom_micro23.pdf}
+}
+
+@inproceedings{trujillo2023inception,
+  title        = {INCEPTION: Exposing New Attack Surfaces with Training in Transient Execution},
+  author       = {Dani{\"e}l Trujillo and Johannes Wikner and Kaveh Razavi},
+  booktitle    = {32nd USENIX Security Symposium},
+  year         = {2023},
+  url          = {https://www.usenix.org/system/files/usenixsecurity23-trujillo.pdf}
+}
+
+@inproceedings{wikner2025breaking,
+  title        = {Breaking the Barrier: Post-Barrier Spectre Attacks},
+  author       = {Johannes Wikner and Kaveh Razavi},
+  booktitle    = {IEEE Symposium on Security and Privacy},
+  year         = {2025},
+  url          = {https://comsec.ethz.ch/wp-content/files/ibpb_sp25.pdf}
+}
+
+@techreport{intel_pbrsb,
+  title        = {Post-barrier Return Stack Buffer Predictions},
+  author       = {{Intel Corporation}},
+  year         = {2022},
+  url          = {https://www.intel.com/content/www/us/en/developer/articles/technical/software-security-guidance/advisory-guidance/post-barrier-return-stack-buffer-predictions.html}
+}
+
+@techreport{intel_rrsba,
+  title        = {Branch History Injection and Intra-mode Branch Target Injection (RRSBA enumeration/mitigation)},
+  author       = {{Intel Corporation}},
+  year         = {2025},
+  url          = {https://www.intel.com/content/www/us/en/developer/articles/technical/software-security-guidance/technical-documentation/branch-history-injection.html}
+}
+
+@techreport{amd2022btc,
+  title        = {Technical Guidance for Mitigating Branch Type Confusion},
+  author       = {{Advanced Micro Devices (AMD)}},
+  year         = {2022},
+  url          = {https://www.amd.com/content/dam/amd/en/documents/resources/technical-guidance-for-mitigating-branch-type-confusion.pdf}
+}
+
+@techreport{amd_srso_whitepaper,
+  title        = {Technical Update Regarding Speculative Return Stack Overflow (SRSO)},
+  author       = {{Advanced Micro Devices (AMD)}},
+  year         = {2024},
+  url          = {https://www.amd.com/content/dam/amd/en/documents/corporate/cr/speculative-return-stack-overflow-whitepaper.pdf}
+}
+
+@misc{amd_sb7005,
+  title        = {AMD Security Bulletin AMD-SB-7005: Speculative Return Stack Overflow (SRSO)},
+  author       = {{Advanced Micro Devices (AMD)}},
+  year         = {2023--2024},
+  url          = {https://www.amd.com/en/resources/product-security/bulletin/amd-sb-7005.html}
+}
+
+@misc{linux_srso_doc,
+  title        = {Speculative Return Stack Overflow (SRSO) --- Linux Kernel Documentation},
+  howpublished = {\url{https://docs.kernel.org/admin-guide/hw-vuln/srso.html}},
+  year         = {2024}
+}
+
+@misc{linux_rsb_doc,
+  title        = {RSB-related mitigations --- Linux Kernel Documentation},
+  howpublished = {\url{https://docs.kernel.org/admin-guide/hw-vuln/rsb.html}},
+  year         = {2025}
+}
+
+@misc{nvd_cve_2023_20569,
+  title        = {CVE-2023-20569 (INCEPTION/SRSO)},
+  howpublished = {NIST National Vulnerability Database},
+  year         = {2023},
+  url          = {https://nvd.nist.gov/vuln/detail/CVE-2023-20569}
+}
+
+@techreport{amd_software_spec,
+  title        = {Software Techniques for Managing Speculation on AMD Processors},
+  author       = {{Advanced Micro Devices (AMD)}},
+  year         = {2023},
+  url          = {https://www.amd.com/content/dam/amd/en/documents/processor-tech-docs/programmer-references/software-techniques-for-managing-speculation.pdf}
 }
