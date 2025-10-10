@@ -4,6 +4,8 @@
 \usepackage{lmodern}
 \usepackage{microtype}
 \usepackage{hyperref}
+% --- keep these once (order matters: hyperref near the end) ---
+\usepackage{booktabs,tabularx,array}
 \usepackage{booktabs}
 \usepackage{xcolor}
 \usepackage{listings}
@@ -241,7 +243,40 @@ PB-Inception relies on (i) persistence of return-target predictions across IBPB 
 \end{enumerate}
 
 \section{Experiments}
-ToDo
+Due to a lack of required hardware, we did not conduct empirical measurements for PB-Inception in this project. A functional testbed will be assembled in future work once the components listed in Table~\ref{tab:pbinc-components} have been procured and integrated. This deferral does not affect the methodological analysis; it only postpones end-to-end exploitation and quantitative evaluation.
+
+% wrap-friendly, ragged-right column for tabularx
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+% slightly denser table look (optional)
+\setlength{\tabcolsep}{6pt}
+\renewcommand{\arraystretch}{1.15}
+\begin{table}[t]
+  \centering
+  \caption{Planned components for the PB-Inception experimental setup.}
+  \label{tab:pbinc-components}
+  \begin{tabularx}{\linewidth}{@{} l Y Y c @{}}
+    \toprule
+    \textbf{Component} & \textbf{Model (link)} & \textbf{Key specs (summary)} & \textbf{Qty} \\
+    \midrule
+    Motherboard &
+      \href{https://www.digitec.ch/de/s1/product/supermicro-h12ssl-i-sp3-amd-soc-atx-mainboard-13904801}
+           {Supermicro H12SSL--i (SP3, ATX)} &
+      Socket SP3; EPYC 7002/7003 support; server board suitable for IBPB/SEV evaluation & 1 \\
+    Memory &
+      \href{https://www.digitec.ch/de/s1/product/micron-16gb-ddr4-3200-2rx8-ecc-rdimm-1-x-16gb-3200-mhz-ddr4-ram-dimm-ram-21164557}
+           {Micron 16\,GB DDR4-3200 ECC RDIMM (2Rx8)} &
+      DDR4--3200; ECC RDIMM; 1\,$\times$\,16\,GB module (expand as needed) & 1 \\
+    CPU &
+      \href{https://www.galaxus.ch/de/s1/product/amd-epyc-7302p-sp3-3-ghz-16-core-prozessor-13259327}
+           {AMD EPYC 7302P} &
+      16C/32T; Rome (Zen~2); SP3; suitable for PB-Inception on Zen~1/2 class targets & 1 \\
+    \bottomrule
+  \end{tabularx}
+
+  \vspace{0.4em}
+  \footnotesize\emph{Note.} PSU, chassis, storage, cooling, and a measurement host for Flush+Reload on the shared buffer are assumed but not itemized.
+\end{table}
+
 
 \section{Results and Discussion}
 ToDo
