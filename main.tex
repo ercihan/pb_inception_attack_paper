@@ -7,6 +7,7 @@
 \usepackage{booktabs}
 \usepackage{xcolor}
 \usepackage{listings}
+\usepackage{amsmath}
 \usepackage{graphicx}
 \lstset{
     basicstyle=\ttfamily\small,
@@ -118,10 +119,17 @@ For AMD Zen, the return predictor remains a privileged choke point: pre-barrier 
 ToDo
 
 \section{Methodology}
-ToDo
-\subsection{Detecting CC Support}
-If a CPU supports confidential computing can easily be verified with the flags in lscpu (Flags: "sev", "sev-es", "sev-snp"):
 
+\paragraph{Goal.}
+Demonstrate a post-IBPB Spectre primitive on AMD Family Zen~1(+)/2 whereby return-target predictions, mistrained before an IBPB, survive the barrier and steer the first ret in the kernel entry path to a chosen leak gadget (PB-Inception). We further instantiate the primitive in a Confidential Computing (CC) setting (AMD SEV-SNP) by exfiltrating secrets into an unencrypted shared buffer (C-bit=0) observable by the host.
+
+\paragraph{Threat model.}
+An unprivileged attacker process (inside a Linux guest) aims to infer kernel-resident data across a user$\rightarrow$kernel boundary that issues IBPB-on-entry. The attacker controls userland code and can load a benign kernel module in the guest for experimental instrumentation. The host is passive and only performs measurements on a shared buffer. No architectural faults or privilege escalations are used.
+
+\paragraph{Preconditions.}
+(i) AMD Family~17h (Zen~1/2) where return-target predictions persist across IBPB; (ii) the Linux entry path executes entry\_ibpb (wrmsr to IBPB) and then performs an early ret; (iii) a kernel leak gadget reachable under speculative control, producing a cache-disclosed signal; (iv) CC flags present (SEV/SEV-ES/SEV-SNP) and availability of a guest page with C-bit cleared to act as a host-observable probe.%
+
+The flags can under Linux be found with the command \texttt{lscpu} by checking the advertised flags "SEV", "SEV-ES", "SEV-SNP" in the following way:
 \begin{lstlisting}[language=bash]
 Architecture:        x86_64
 CPU op-mode(s):      32-bit, 64-bit
@@ -159,46 +167,78 @@ rdseed adx smap clflushopt clwb sha_ni xsaveopt xsaves xgetbv1
 clzero xsaveerptr arat npt nrip_save umip vaes sev sev-es sev-snp
 \end{lstlisting}
 
-\subsection{How to circumvent confidential computing?}
-There are multiple ways to circumvent CC with this new kind of vulnerability. One is that the attacker crafts special payloads to train the CPU in a way to return in the victim's process to a wrong memory address. This would circumvent the CC measures because the memory, which stays encrypted with the instructions within cannot be read directly but the process which executes instructions, only decrypted in the CPU, will be running in an attacker controllable space and so the information output of the data within the instructions is than in an unencrypted attacker controllable space.
+\subsubsection{Overview of the exploit flow}
+\label{sec:method:pb-inception:overview}
+PB-Inception proceeds in three phases:
 
-\subsection{Proof of Concept: RRSBA Poisoning -> valid till Linux kernel < 6.9 or missing flags}
-Post‑Barrier Return Stack Buffer Alternate (PB‑RRSBA) attacks abuse the fallback “alternate” return predictor that takes over when the architectural RSB under‑flows. Intel now exposes two architectural bits in \texttt{IA32\_SPEC\_CTRL} to disable that predictor bit 5 \texttt{RRSBA\_DIS\_U} (user mode) and bit 6 \texttt{RRSBA\_DIS\_S} (kernel mode). If either bit is 1 the predictor is gated off for that privilege level, closing PB‑RRSBA.
+\begin{enumerate}
+  \item \textbf{Pre-IBPB transient training (user mode).} We execute a transient-only call cascade to poison return predictions with addresses that alias a chosen kernel gadget. The cascade is \emph{Training-in-Transient-Execution} (TTE): a mispredicted backward \texttt{Jcc} keeps the predicate unresolved while a sequence of 64 \texttt{call}-sites (\texttt{TRAMP\_COUNT}) issues \emph{speculative} \texttt{CALL}s. None of these calls retire architecturally, they only push return addresses into the return predictor. A deliberately ``slow'' load on the branch predicate (mapped cold memory) widens the speculation window.
+  \item \textbf{Crossing the IBPB boundary.} We invoke a system call (getpid) so the kernel executes \texttt{entry\_ibpb} early in the entry path (wrmsr to IBPB) and then performs the first post-IBPB \texttt{ret}. Because return-target predictions persist across IBPB on Zen1/2, that \texttt{ret} speculatively follows our poisoned predictions.
+  \item \textbf{Speculative leak and recovery.} The mispredicted return lands in a kernel \emph{data-cache (DC) leak gadget} that loads one byte from a chosen kernel virtual address and encodes it as a cache footprint at offset \texttt{val\,$\ll$\,12} in a 1\,MiB probe buffer. The probe buffer is mapped in the guest but backed by guest-physical memory with C-bit=0 and \emph{also} ioremapped cached in the kernel, so the host can recover the byte via Flush+Reload.
+\end{enumerate}
 
-Kernel support for programming those bits first appeared in Linux 6.9 (May 2024).  The x86 tree gained \texttt{spectre\_v2=rrsba\_disable}, and the scheduler now sets the bits automatically when the CPU advertises \texttt{RRSBA\_CTRL}. Earlier kernels leave both bits at their reset value 0, so the predictor stays enabled even after an IBPB.\\
+\subsubsection{Implementation details (as used in our harness)}
+\label{sec:method:pb-inception:impl}
 
-\vspace{-0.5em}
-\begin{lstlisting}[style=bash-nonitalic, caption={\texttt{attacker\_rrsba\_injection\_test.sh}}]
-neo@morpheus:~$ sudo rdmsr -0 0x48 | awk '{printf "IA32_SPEC_CTRL = 0x%x\n",$1}'
-IA32_SPEC_CTRL = 0x191
-neo@morpheus:~$
-neo@morpheus:~$ grep -o "RRSBA_CTRL" /proc/cpuinfo || cpuid -r | grep RRSBA_CTR
-neo@morpheus:~$
-neo@morpheus:~$ cat /sys/devices/system/cpu/vulnerabilities/itlb_multihit /sys/devices/system/cpu/vulnerabilities/spectre_v2
-Not affected
-Mitigation: Enhanced / Automatic IBRS; IBPB: conditional; PBRSB-eIBRS: SW sequence; BHI: BHI_DIS_S
-neo@morpheus:~$
+\paragraph{Kernel gadget LKM.}
+We load a minimal LKM that exports \texttt{pbinc\_dc\_gadget()} and wires three sysfs controls under \texttt{/sys/kernel/pbinc/}: (i) \texttt{probe} (guest-physical base of the shared 1\,MiB probe, ioremapped with \texttt{ioremap\_cache()}), (ii) \texttt{leak} (kernel VA to read the secret byte), and (iii) \texttt{gaddr} (the gadget's kernel VA for alias matching). The gadget performs:
+\[
+\text{\texttt{val = *leak\_source\_va;\quad writeb(1, probe\_kva + (val << 12));}}
+\]
+which yields a strong Flush+Reload signal while keeping the architectural path benign.
 
-# Short explaination:
-# rdmsr decoding
-# IA32_SPEC_CTRL = 0x191
-# => 0b0001 1001 0001
-#         ^ ^||^    ^ bits 8,7,4,0 = 1 (PSFD, DDPD_U, IPRED_DIS_S, IBRS)
-#            ^|       bits 6 (RRSBA_DIS_S)=0 <- kernel predictor still active
-#             ^       bit 5 (RRSBA_DIS_U)=0  <- user space predictor still active
-# Bit 0 (IBRS) -> enhanced / automatic Indirect Branch Restricted Speculation
-# is enabled.
-# Bit 4 (IPRED_DIS_S) -> the kernel has disabled the legacy IP based indirect
-# predictor.
-# Bit 7 (PSFD) -> Fast Store Forwarding predictor is disabled.
-# Bit 8 (DDPD_U) -> the usermode Data Dependent Prefetcher is disabled.
 
-# cpuid / RRSBA feature
-#(no output) <- CPU/firmware do not advertise RRSBA_CTRL; bits cannot be set
+\paragraph{Return-address aliasing trampolines.}
+To bias the return predictor toward \texttt{pbinc\_dc\_gadget}, we JIT-build executable \emph{trampolines} whose \emph{return addresses} (the instruction immediately after a call) share the same low-bit alias class as the gadget (\texttt{ALIAS\_MASK = 0xFFFFF}). We scan an RX region to place 64 trampolines whose post-call RAs satisfy
+\[
+(\texttt{RA} \ \&\ \texttt{ALIAS\_MASK}) = (\texttt{gaddr} \ \&\ \texttt{ALIAS\_MASK}),
+\]
+and store their entry pointers in \texttt{\_\_alias\_tbl[64]}.
 
-# sysfs
-# RRSBA not mentioned -> kernel < 6.9 (or old microcode) so RRSBA remains enabled
-\end{lstlisting}
+\paragraph{TTE call cascade.}
+User-mode assembly \texttt{pbinc\_entry} executes:
+\begin{enumerate}
+  \item a forward jump to skip the cascade architecturally
+  \item a backward jump \texttt{JE} whose condition is delayed via a load from \texttt{\_\_slow\_predicate\_ptr};
+  \item in the mispredicted path, a loop of 64 call instructions, each through \texttt{\_\_alias\_tbl[i]}, pushing colliding RAs and overflowing return prediction state
+  \item a \texttt{syscall} to \texttt{getpid} (triggers entry-IBPB).
+\end{enumerate}
+The cascade is arranged so no call retires, it only perturbs return predictions.
+
+\paragraph{Crossing IBPB and hijacking the first return.}
+Linux enters the kernel, executes \texttt{entry\_ibpb} (wrmsr to IBPB), then returns into the regular entry path. On AMD Zen1/2, IBPB does not invalidate return-target predictions; hence the first \texttt{ret} post-IBPB speculates to our gadget. We intentionally target a very early return in the entry path (before stack randomization) to maximize stability and cache-control over the speculation window.
+
+\paragraph{Covert channel and measurement.}
+The host (or a separate monitoring thread) performs Flush+Reload over the 1\,MiB probe (256 pages at 4\,KiB spacing). Each speculative byte sets exactly one page hot at offset \texttt{val\,$\ll$\,12}. For runs under SEV-SNP, we allocate the probe page(s) as shared (C-bit=0) and pass the guest-physical base to the LKM via \texttt{/sys/kernel/pbinc/probe}. This preserves the CC threat model while allowing the host to measure cache state.
+
+\subsubsection{Confidential Computing context (SEV-SNP)}
+\label{sec:method:pb-inception:cc}
+We verify CC availability with \texttt{lscpu} flags \texttt{sev}, \texttt{sev-es}, and \texttt{sev-snp}. For leakage, the probe buffer must be \emph{unencrypted} (C-bit=0) so that a host Flush+Reload can observe the signal while the victim code and kernel data remain protected at rest. The core mechanism remains speculative and in-core: decrypted instructions/data are processed transiently even under SEV-SNP, and microarchitectural footprints on shared memory are observable.
+
+\subsubsection{Controls and validation}
+\label{sec:method:pb-inception:controls}
+We validate causality with the following A/B toggles:
+\begin{itemize}
+  \item \textbf{Mitigation toggle:} disable IBPB-on-entry or add full RSB stuffing at kernel entry $\Rightarrow$ signal vanishes.
+  \item \textbf{Gadget toggle:} unload the LKM or point \texttt{leak} to an unmapped address $\Rightarrow$ no hits.
+  \item \textbf{Aliasing toggle:} randomize \texttt{ALIAS\_MASK} or build zero trampolines $\Rightarrow$ no hijack.
+  \item \textbf{Microarchitecture toggle:} run on non-Zen1/2 AMD or Intel $\Rightarrow$ negative (as expected for PB-Inception).
+  \item \textbf{Performance counters:} observe elevated branch-miss and machine-clear events during active runs.
+\end{itemize}
+
+\subsubsection{Assumptions, limitations, and ethics}
+\label{sec:method:pb-inception:limits}
+PB-Inception relies on (i) persistence of return-target predictions across IBPB on AMD Zen1/2, (ii) an early \texttt{ret} after \texttt{entry\_ibpb}, and (iii) availability of a kernel leak gadget. Systems that untrain/stuff the RSB on entry, remove early returns, or alter IBPB application semantics invalidate the preconditions.
+
+\subsubsection{Reproducibility checklist}
+\label{sec:method:pb-inception:repro}
+\begin{enumerate}
+  \item Pin attacker to a single core; record \texttt{/sys/devices/system/cpu/vulnerabilities/spectre\_v2}.
+  \item Build and insert the LKM; provision \texttt{probe} (GPA of C-bit=0 buffer), \texttt{leak} (KVA), and read \texttt{gaddr}.
+  \item Build user binary with trampolines (64 entries, \texttt{ALIAS\_MASK} tuned to the gadget).
+  \item Run \texttt{pbinc\_poc} and start host Flush+Reload over the 1\,MiB probe.
+  \item Collect latency histograms. Confirm single-page hits at offsets \texttt{val\,$\ll$\,12}; execute controls in~\S\ref{sec:method:pb-inception:controls}.
+\end{enumerate}
 
 \section{Experiments}
 ToDo
