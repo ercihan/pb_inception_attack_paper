@@ -120,7 +120,31 @@ Linux now documents SRSO/RSB mitigations (IBPB strategies, untrained returns, RS
 For AMD Zen, the return predictor remains a privileged choke point: pre-barrier mistraining plus post-barrier retention under specific IBPB configurations yields PB-Inception-style cross-privilege leaks. Comprehensive defenses require both correct barrier semantics in microcode \emph{and} software-side RSB sanitization at the right points in the control-flow transitions \cite{wikner2025breaking,trujillo2023inception,linux_srso_doc}.
 
 \section{Contribution}
-ToDo
+
+This work systematizes and instantiates a \emph{post‑IBPB} speculative execution primitive on AMD Zen~1(+)/Zen~2 that we term \textbf{PB‑Inception}: return‑target predictions, mistrained immediately \emph{before} an IBPB, persist \emph{across} the barrier and steer the first \texttt{ret} on kernel entry into an attacker‑chosen gadget. We then place this primitive in a Confidential Computing (CC) setting (SEV‑SNP), exfiltrating bytes into an intentionally shared, unencrypted buffer (\(C\)-bit=0) without violating the CC threat model. Concretely, our contributions are:
+
+\begin{enumerate}
+  \item \textbf{From INCEPTION to PB‑Inception, across the IBPB boundary.}
+  We show how return prediction poisoning performed just prior to an IBPB can survive the barrier on Zen~1/2 and transiently redirect the first post‑IBPB \texttt{ret} to a kernel DC gadget. This connects and extends prior return‑centric work (SpectreRSB, ret2spec, RETbleed, and INCEPTION/SRSO) by focusing on the \emph{post‑barrier} window, where software relies on IBPB to sever cross‑domain predictor influence \cite{koruyeh2018spectrersb,maisuradze2018ret2spec,wikner2022retbleed,trujillo2023inception,linux_srso_doc,wikner2025breaking}. On Zen~1/2, the resulting PB‑Inception path remains viable unless the entry path sanitizes return prediction state (e.g. RSB stuffing) \cite{linux_rsb_doc,wikner2025breaking}.
+
+  \item \textbf{A constructive, auditable PoC design.}
+  We provide a self‑contained harness that: (i) \emph{trains in transient execution} (TTE) using a backward‑mispredicted \texttt{Jcc} to open a long speculative window; (ii) emits a cascade of 64 speculative \texttt{call}s whose \emph{return addresses} are deliberately chosen to alias a kernel gadget; (iii) crosses the user\(\rightarrow\)kernel boundary that executes \texttt{entry\_ibpb}; and (iv) speculatively lands in a minimal kernel DC gadget that loads one byte and encodes it at offset \(\texttt{val} \ll 12\) into a 1\,MiB probe buffer. None of the training calls retire architecturally; they only perturb return prediction state. The artifact is designed to be falsifiable via A/B toggles (mitigations, aliasing pressure, gadget presence, microarchitecture), aligning with best practice for Spectre‑style evaluation \cite{kocher2018spectre,trujillo2023inception,wikner2025breaking,linux_srso_doc,linux_rsb_doc}.
+
+  \item \textbf{Confidential Computing instantiation without breaking the CC model.}
+  We demonstrate how the PB‑Inception primitive composes with SEV‑SNP: secrets remain encrypted at rest/in transit, yet transient execution still occurs on decrypted lines in‑core. By writing the covert‑channel signal to a shared (\(C\)-bit=0) buffer that the host can observe, we separate confidentiality at rest from in‑core speculation side‑effects, clarifying what CC defends (and what it does not) \cite{linux_srso_doc}. This provides a crisp threat translation from “classic” Spectre to CC deployments.
+
+  \item \textbf{Mechanistic mapping of Linux entry and mitigations on Zen~1/2.}
+  We identify a practical early \texttt{ret} site after \texttt{entry\_ibpb} on the Linux entry path and show how its speculative target can be steered by pre‑barrier training. We spell out conditions under which software mitigations defeat the attack (e.g. RSB stuffing/untrained returns or removal of early \texttt{ret} sites), and when they do not (IBPB‑on‑entry alone on Zen~1/2) \cite{linux_srso_doc,linux_rsb_doc,wikner2025breaking}. Our analysis complements vendor guidance on early‑frontend speculation/BTC and post‑barrier return prediction on AMD  \cite{amd2022btc,amd_software_spec,intel_pbrsb,intel_rrsba}.
+
+  \item \textbf{Reproducibility blueprint in the absence of measurements.}
+  While we defer on‑hardware measurements, we contribute a complete, auditable pathway-kernel gadget, user‑space training harness, trampoline builder, CC plumbing, and A/B validation matrix, so that third parties can independently reproduce, refute, or extend our claims on suitable Zen~1/2 systems. The harness exposes clear, measurable observables (one‑hot page hits at \(\texttt{val} \ll 12\)) and includes negative controls to guard against confounders \cite{linux_srso_doc,linux_rsb_doc,wikner2025breaking}.
+\end{enumerate}
+
+\paragraph{Novelty relative to prior art.}
+RETbleed steers returns via BTB collisions across privilege domains. INCEPTION/SRSO injects return predictions to create long transient windows \cite{wikner2022retbleed,trujillo2023inception}. \emph{PB‑Inception} isolates a different seam: the \emph{post‑barrier} region where IBPB was intended to neutralize cross‑domain influence. We show, in a constructive setting, that on Zen~1/2 the return predictor can retain pre‑barrier state across IBPB and thus misdirect the first post‑IBPB \texttt{ret}, a behavior anticipated by recent post‑barrier analyses and kernel guidance, but here turned into an end‑to‑end exploitation recipe with a CC‑aware channel \cite{wikner2025breaking,linux_srso_doc,linux_rsb_doc,intel_pbrsb,intel_rrsba}.
+
+\paragraph{Security takeaway.}
+For Zen~1/2, \emph{IBPB‑on‑entry alone is not sufficient}. Practical defenses require sanitizing return prediction on privilege transitions (e.g. RSB stuffing/untrained returns) or removing susceptible early returns along the entry path, when available, microcode with stronger post‑barrier semantics should be paired with these software measures \cite{linux_srso_doc,linux_rsb_doc,wikner2025breaking}.
 
 \section{Methodology}
 
