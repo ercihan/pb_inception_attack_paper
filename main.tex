@@ -84,11 +84,10 @@
 %\section{Appendix}
 
 \section*{Abstract}
-ToDo
+In this paper we introduce a new post-IBPB speculative execution exploit that builds upon prior Spectre-class attacks named PB-Inception. This exploit is aimed at AMD Zen1 and Zen2 CPUs. The IBPB normally defends against Spectre-class attacks, getting executed to clean all the old predictions, but in reality not all return predictions are flushed by the IBPB, as some of them can persist even after it's execution and the window after the execution that is assumed to be clean can thus be exploited for speculative executions. 
 
 \section{Intoduction}
 ToDo
-\subsection{Use Case: Confidential Computing}
 Confidential computing encrypts memory (including instructions and data) using keys managed by the AMD Secure Processor (ASP). Secure Encrypted Virtualization (SEV) encrypts the entire VM memory, so instructions and data remain encrypted while stored in RAM. Only the CPU decrypts them on-the-fly during execution.
 
 SEV-SNP adds integrity protection, ensuring that the hypervisor cannot tamper with or remap the VM's memory. This prevents attacks like memory snooping or VM breakout, even from a compromised hypervisor.
@@ -119,6 +118,9 @@ Linux now documents SRSO/RSB mitigations (IBPB strategies, untrained returns, RS
 \paragraph{Takeaway.}
 For AMD Zen, the return predictor remains a privileged choke point: pre-barrier mistraining plus post-barrier retention under specific IBPB configurations yields PB-Inception-style cross-privilege leaks. Comprehensive defenses require both correct barrier semantics in microcode \emph{and} software-side RSB sanitization at the right points in the control-flow transitions \cite{wikner2025breaking,trujillo2023inception,linux_srso_doc}.
 
+%Contribution after the introduction
+% Related work some technical background
+% Available as an open source github project
 \section{Contribution}
 
 This work systematizes and instantiates a \emph{post‑IBPB} speculative execution primitive on AMD Zen~1(+)/Zen~2 that we term \textbf{PB‑Inception}: return‑target predictions, mistrained immediately \emph{before} an IBPB, persist \emph{across} the barrier and steer the first \texttt{ret} on kernel entry into an attacker‑chosen gadget. We then place this primitive in a Confidential Computing (CC) setting (SEV‑SNP), exfiltrating bytes into an intentionally shared, unencrypted buffer (\(C\)-bit=0) without violating the CC threat model. Concretely, our contributions are:
@@ -195,6 +197,7 @@ rdseed adx smap clflushopt clwb sha_ni xsaveopt xsaves xgetbv1
 clzero xsaveerptr arat npt nrip_save umip vaes sev sev-es sev-snp
 \end{lstlisting}
 
+% Visualization of a exploit flow
 \subsubsection{Overview of the exploit flow}
 \label{sec:method:pb-inception:overview}
 PB-Inception proceeds in three phases:
@@ -625,6 +628,7 @@ With \texttt{TRAMP\_COUNT}=64 and a correctly tuned \texttt{ALIAS\_MASK}, a sing
 
 \vspace{-0.5em}
 
+% Put this subsection under experiments
 \subsection{Fully glued one-shot PoC (artifact overview)}
 For reproducibility and easy migration to the appendix, we summarise the end-to-end harness:
 
@@ -648,9 +652,10 @@ SEV-SNP ensures memory confidentiality/integrity at rest and in transit, it does
 \subsection{Summary}
 Even without hardware measurements, the PoC provides a complete, auditable chain from predictor poisoning (TTE) through a post-IBPB return hijack to a high-SNR cache channel, together with A/B controls that make the mechanism falsifiable. The security implication is sharp: on Zen~1/2, IBPB-on-entry alone is insufficient software must also sanitise return prediction state on privilege transitions or remove susceptible early returns. These statements follow directly from the code paths and the end-to-end harness described here and in \S\ref{sec:method:pb-inception:overview}--\S\ref{sec:method:pb-inception:controls}.\cite{wikner2025breaking,trujillo2023inception,linux_srso_doc,linux_rsb_doc}
 
+% Integrate it to Results and Discussion
+% How to run markdown -> on github
 \section{Future Work}
-ToDo
-
+We plan on performing tests on physical AMD hardware. To build the environment we plan on using a Supermicro H12SSL-i mainboard, Micron 16GB DDR4-3200 2RX8 ECC RDIMM and AMD EPYC 7302P CPU. Once built, this will allow us to perform controlled testing and acquire quantitative data.
 
 \section{Conclusion}
 ToDo
