@@ -109,7 +109,6 @@ Our artifact is designed to be auditable and falsifiable. It performs training e
 \paragraph{Contributions (summary)}
 In brief, we (i) systematize a post-IBPB return-hijack primitive on Zen~1/2; (ii) provide a constructive, reproducible PoC that trains in transient execution and hijacks the first post-IBPB return; (iii) show how to integrate the primitive with SEV-SNP using a CC-compliant probe channel; and (iv) analyze where Linux entry paths and mitigation profiles defeat or permit the primitive. The detailed list appears in~\S\ref{sec:contribution}, with methodology in~\S\ref{sec:methodology} and a discussion of implications in~\S\ref{sec:results}.
 
-%Contribution after the introduction
 % Related work some technical background
 % Available as an open source github project
 \section{Contribution}
@@ -676,7 +675,24 @@ Even without hardware measurements, the PoC provides a complete, auditable chain
 
 
 \section{Conclusion}
-ToDo
+\label{sec:conclusion}
+
+This work systematizes and instantiates a \emph{post–IBPB} speculative–execution primitive on AMD Zen~1(+)/Zen~2 that we call \textsc{PB-Inception}. We show that return–target predictions mistrained immediately before an IBPB can persist across the barrier and transiently steer the first \texttt{ret} on kernel entry to a minimal, auditable data–cache gadget. Our constructive pathway trains entirely in transient execution, crosses a user$\rightarrow$kernel boundary that executes \texttt{entry\_ibpb}, and encodes one secret byte per entry into a 1\,MiB probe buffer, yielding a high-SNR signal that is easy to validate with standard Flush+Reload. We further demonstrate how the primitive composes with SEV-SNP without violating the Confidential Computing (CC) threat model: data remain encrypted at rest/in transit while in-core transient effects on shared, unencrypted buffers remain observable.
+
+From a defensive standpoint, the takeaway is sharp: on Zen~1/2, \emph{IBPB-on-entry alone is insufficient}. Practical deployments must additionally sanitize return prediction on privilege transitions (e.g. RSB stuffing or untrained returns) or eliminate early \texttt{ret} sites along the entry path. These requirements are consistent current kernel guidance and put control in software when microcode lacks stronger post-barrier semantics in microcode.
+
+\paragraph{Implications.}
+\begin{itemize}
+  \item \textbf{Privilege transitions.} Sanitizing return prediction on user$\rightarrow$kernel entry closes the narrow but reliable post-IBPB window we exploit. When enabled, RSB stuffing/untrained returns remove our speculative landing path; when disabled, the signal would reappears.
+  \item \textbf{Entry-path engineering.} Removing or delaying early \texttt{ret} sites after \texttt{entry\_ibpb} reduces exploitable targets and shortens the speculation window. Auditing these paths should be part of standard hardening on Zen~1/2 systems that rely on IBPB.
+  \item \textbf{CC deployments.} SEV-SNP protects confidentiality at rest and in transit but does not preclude in-core transient execution on decrypted lines. CC operators should pair IBPB with return–prediction hygiene and avoid shared (C-bit\,$=0$) mappings unless strictly necessary.
+\end{itemize}
+
+\paragraph{Limitations and scope.}
+Our artifact is intentionally minimal and auditable; it targets AMD Family~17h (Zen~1/2), assumes an early post-IBPB \texttt{ret}, and requires a reachable leak gadget to produce a measurable cache footprint. While we defer on-hardware measurements, the PoC exposes clear observables and includes A/B toggles (mitigations, aliasing pressure, gadget presence, microarchitecture) to falsify causality and guard against confounders. Extending the evaluation to additional microarchitectures and mitigation profiles is a natural next step.
+
+\paragraph{Outlook.}
+We provide a reproducible blueprint, kernel gadget, user-space training harness, CC plumbing, and controls, so third parties can independently confirm or refute our findings on suitable Zen~1/2 systems. In parallel with empirical measurements, we advocate for (i) default pairing of IBPB with RSB sanitization on affected systems, (ii) entry-path reviews that remove early \texttt{ret} sites, and (iii) exploration of microcode options that harden post-barrier return prediction. Together these measures close the seam that \textsc{PB-Inception} exploits while preserving deployment practicality.
 
 \section*{Acknowledgements}
 This work benefited from the guidance and support of several colleagues. We thank \textbf{G\"urkan G\"ur} for supervising the project, \textbf{Jennifer Studer} for advising on the structure of the manuscript, \textbf{J\'erome Cristiano} for assistance with naming the exploit, and \textbf{Antonia Hinkerohe} for targeted feedback on specific chapters.
