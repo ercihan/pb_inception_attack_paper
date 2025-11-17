@@ -119,19 +119,6 @@ Our artifact is designed to be auditable and falsifiable. It performs training e
 \paragraph{Contributions (summary)}
 In brief, we (i) systematize a post-IBPB return-hijack primitive on Zen~1/2; (ii) provide a constructive, reproducible PoC that trains in transient execution and hijacks the first post-IBPB return; (iii) show how to integrate the primitive with SEV and SEV-ES using a CC-compliant probe channel; and (iv) analyze where Linux entry paths and mitigation profiles defeat or permit the primitive. The detailed list appears in~\S\ref{sec:contribution}, with methodology in~\S\ref{sec:methodology} and a discussion of implications in~\S\ref{sec:results}.
 
-\subsection{Related works}
-\begin{center}
-\begin{tabular}{|m{5mm}|m{2cm}|m{2cm}|m{2cm}|m{2cm}|m{2cm}|m{2cm}|m{2cm}|m{2cm}|}
-  \hline
-  Paper & Attack & Attacker model & Preconditions & Mitigations & Reproducibility & Side-channel used & CC impact \\ 
-  \hline
-  11 & Spectre-BCB & & & bounds-check hardening, masking, LFENCE/Speculation Barriers & & & \\ 
-  \hline
-  11 & Spectre-BTI & & & IBRS, IBPB, Retpoline & & & \\ 
-  \hline
-\end{tabular}
-\end{center}
-
 % Related work some technical background
 % Available as an open source github project
 \section{Contribution}
