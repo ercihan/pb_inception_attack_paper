@@ -6,12 +6,22 @@
 \usepackage{pdflscape}   % rotates the *page* in the PDF viewer
 \usepackage{ragged2e}    % for \RaggedRight with proper hyphenation
 \usepackage{hyperref}
-% --- keep these once (order matters: hyperref near the end) ---
+% order matters: hyperref near the end)
 \usepackage{booktabs,tabularx,array}
+% multipage tables + landscape support
+\usepackage{longtable}
+% wrapping column helpers
+\newcolumntype{Y}{>{\RaggedRight\arraybackslash}X} % keep for other tabularx tables
+\newcolumntype{P}[1]{>{\RaggedRight\arraybackslash}p{#1}} % ragged-right p{} with wrapping
+\setlength{\LTpre}{0pt}
+\setlength{\LTpost}{0pt}
 \usepackage{booktabs}
 \usepackage{xcolor}
 \usepackage{listings}
 \usepackage{amsmath}
+% Wrapping column for tabularx (proper hyphenation)
+\newcolumntype{Y}{>{\RaggedRight\arraybackslash}X}
+
 \usepackage{graphicx}
 \lstset{
     basicstyle=\ttfamily\small,
@@ -109,6 +119,19 @@ Our artifact is designed to be auditable and falsifiable. It performs training e
 \paragraph{Contributions (summary)}
 In brief, we (i) systematize a post-IBPB return-hijack primitive on Zen~1/2; (ii) provide a constructive, reproducible PoC that trains in transient execution and hijacks the first post-IBPB return; (iii) show how to integrate the primitive with SEV and SEV-ES using a CC-compliant probe channel; and (iv) analyze where Linux entry paths and mitigation profiles defeat or permit the primitive. The detailed list appears in~\S\ref{sec:contribution}, with methodology in~\S\ref{sec:methodology} and a discussion of implications in~\S\ref{sec:results}.
 
+\subsection{Related works}
+\begin{center}
+\begin{tabular}{|m{5mm}|m{2cm}|m{2cm}|m{2cm}|m{2cm}|m{2cm}|m{2cm}|m{2cm}|m{2cm}|}
+  \hline
+  Paper & Attack & Attacker model & Preconditions & Mitigations & Reproducibility & Side-channel used & CC impact \\ 
+  \hline
+  11 & Spectre-BCB & & & bounds-check hardening, masking, LFENCE/Speculation Barriers & & & \\ 
+  \hline
+  11 & Spectre-BTI & & & IBRS, IBPB, Retpoline & & & \\ 
+  \hline
+\end{tabular}
+\end{center}
+
 % Related work some technical background
 % Available as an open source github project
 \section{Contribution}
@@ -161,6 +184,130 @@ Linux now documents SRSO/RSB mitigations (IBPB strategies, untrained returns, RS
 
 \paragraph{Takeaway.}
 For AMD Zen, the return predictor remains a privileged choke point: pre-barrier mistraining plus post-barrier retention under specific IBPB configurations yields PB-Inception-style cross-privilege leaks. Comprehensive defenses require both correct barrier semantics in microcode \emph{and} software-side RSB sanitization at the right points in the control-flow transitions \cite{wikner2025breaking,trujillo2023inception,linux_srso_doc}.
+
+\begin{landscape}
+\begin{table}[t] \centering \vspace*{-1.2\baselineskip}\end{table} % keep float spacing happy
+
+\begin{small}
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.15}
+
+\begin{longtable}{@{}%
+  P{0.16\linewidth} % Attack / Targeted structure (Post-IBPB?)
+  P{0.12\linewidth} % Attacker model / boundary
+  P{0.13\linewidth} % Preconditions
+  P{0.16\linewidth} % Effective mitigations
+  P{0.15\linewidth} % OS/µcode knobs
+  P{0.08\linewidth} % Evidence / PoC
+  P{0.08\linewidth} % Side-channel
+  P{0.12\linewidth} % CC impact
+@{}}
+\caption{Related work overview by predictor target, boundary, preconditions, effective mitigations, OS/\,$\mu$code knobs, evidence, side channel, and CC impact. “Post‑IBPB?” indicates whether the path relies on prediction state persisting across an IBPB boundary.}
+\label{tab:related-work-overview}\\
+
+\toprule
+\textbf{Attack / Targeted structure (Post‑IBPB?)} &
+\textbf{Attacker model / boundary} &
+\textbf{Preconditions} &
+\textbf{Effective mitigations (what actually stops it)} &
+\textbf{OS/\,$\mu$code knobs (Linux / CPUID)} &
+\textbf{Evidence / PoC} &
+\textbf{Side‑channel} &
+\textbf{ CC impact (SEV / ES)} \\
+\midrule
+\endfirsthead
+
+\multicolumn{8}{l}{\small\itshape Table \thetable\ (continued)}\\
+\toprule
+\textbf{Attack / Targeted structure (Post‑IBPB?)} &
+\textbf{Attacker model / boundary} &
+\textbf{Preconditions} &
+\textbf{Effective mitigations (what actually stops it)} &
+\textbf{OS/\,$\mu$code knobs (Linux / CPUID)} &
+\textbf{Evidence / PoC} &
+\textbf{Side‑channel} &
+\textbf{ CC impact (SEV / ES)} \\
+\midrule
+\endhead
+
+\midrule
+\multicolumn{8}{r}{\small\itshape Continued on next page}
+\endfoot
+
+\bottomrule
+\endlastfoot
+
+\textbf{Spectre v1 (PHT) \cite{kocher2018spectre} (No)} &
+Same‑process; cross‑sandbox/JIT; sometimes cross‑process &
+Bounds‑check bypass on mispredicted conditional; timer/eviction primitive &
+Bounds‑check hardening; compiler SLH; masking; LFENCE/speculation barriers (IBPB/RSB not primary) &
+Compiler flags (SLH); kernel hardening hooks; some trees expose \texttt{nospectre\_v1} &
+Yes; many PoCs since 2018 &
+Flush+Reload; Prime+Probe (varies) &
+Intra‑VM leakage; host observation requires shared C‑bit{=}0 mapping \\
+
+\textbf{Spectre v2 (BTB/indirect) \cite{kocher2018spectre} (No / IBPB mitigates)} &
+Cross‑process; user$\rightarrow$kernel; cross‑VM variants &
+Indirect‑branch poisoning; suitable training; timer &
+IBRS, IBPB, STIBP; retpoline (RSB stuffing helps returns only) &
+\texttt{spectre\_v2=*}, \texttt{spectre\_v2\_user=
+prctl,ibpb}; CPUID: \texttt{ibrs}, \texttt{ibpb}, \texttt{stibp} &
+Yes; widely reproduced &
+Flush+Reload; Prime+Probe &
+Same as above; host timing needs shared C‑bit{=}0 page \\
+
+\textbf{SpectreRSB (RSB) \cite{koruyeh2018spectrersb} (No)} &
+User$\rightarrow$kernel; cross‑thread/process on same core &
+RSB underflow/overfill; entry without RSB sanitization; early \texttt{ret} reachable &
+RSB stuffing on entry; untrained‑return (Safe‑RET) thunks on entry &
+\texttt{spec\_rstack\_overflow=
+safe-ret} (Linux); RSB clear/stuff on switch &
+Yes; public PoCs &
+Flush+Reload (typical) &
+Works intra‑guest; host view requires shared C‑bit{=}0 \\
+
+\textbf{ret2spec (RSB) \cite{maisuradze2018ret2spec} (No)} &
+Same‑process and cross‑thread; user$\rightarrow$kernel variants &
+RSB pollution; suitable return window; timer &
+RSB stuffing; Safe‑RET thunks; remove early returns on entry path &
+\texttt{spec\_rstack\_overflow=
+safe-ret} (Linux) &
+Yes; PoC in paper &
+Flush+Reload &
+As above (shared C‑bit{=}0 for host‑visible channel) \\
+
+\textbf{INCEPTION / SRSO / TTE \cite{trujillo2023inception} (Yes)} &
+User$\rightarrow$kernel; AMD Zen gens &
+Pre‑entry return‑prediction poisoning; early \texttt{ret} after entry; IBPB‑only; timer &
+Untrained‑return / Safe‑RET (AMD \textit{JMP2RET}); entry sanitization; IBPB alone insufficient on Zen 1/2 &
+\texttt{spec\_rstack\_overflow=
+safe-ret}; vendor microcode; CPUID enumerates SRSO mitigations (where present) &
+Yes; PoCs and vendor guidance &
+Flush+Reload (typical) &
+CC‑light: still leaks in‑core; host needs shared C‑bit{=}0 page \\
+
+\textbf{SRSO mitigation (Linux/vendor) \cite{linux_srso_doc,amd_srso_whitepaper} (Mitigation)} &
+N/A &
+N/A &
+Safe‑RET / untrained‑return thunks at entry; optional RSB stuffing; policy on IBPB use &
+\texttt{spec\_rstack\_overflow=
+\{safe-ret,ibpb,off\}}, \texttt{spectre\_v2\_user=prctl,ibpb}; CPUID per vendor &
+N/A (guidance) &
+N/A &
+Prevents return‑hijack paths irrespective of CC \\
+
+\textbf{Generic mitigations (survey) \cite{kocher2018spectre,linux_srso_doc,linux_rsb_doc} (By variant)} &
+V1: same‑proc/cross‑sandbox; V2: cross‑proc/user$\rightarrow$kernel; Meltdown separate &
+V1: bounds‑check bypass; V2: indirect‑branch poisoning &
+V1: hardening, SLH, LFENCE; Meltdown: KPTI; V2: IBRS/IBPB/Retpoline (RSB only for returns) &
+Linux knobs above; compiler options; microcode (IBRS/IBPB) &
+N/A (survey) &
+Various (F+R, P+P, …) &
+CC‑light unaffected architecturally; shared mappings govern host visibility \\
+
+\end{longtable}
+\end{small}
+\end{landscape}
 
 \section{Methodology}
 \label{sec:methodology}
