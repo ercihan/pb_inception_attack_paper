@@ -84,15 +84,15 @@
 %\section{Appendix}
 
 \section*{Abstract}
-We present \emph{PB-Inception}, a post–Indirect Branch Predictor Barrier (IBPB) speculative-execution primitive on AMD Zen~1(+)/Zen~2 processors. Contrary to the intended semantics of IBPB, we show that return-target predictions mistrained immediately before the barrier can persist across it and transiently redirect the first \texttt{ret} on kernel entry to an attacker-chosen gadget. We design a constructive, auditable proof-of-concept that (i) performs training entirely in transient execution using a backward-mispredicted conditional branch and a cascade of aliasing \texttt{call}s to bias return prediction, (ii) crosses a user{\textrightarrow}kernel boundary that executes \texttt{entry\_ibpb}, and (iii) speculatively lands in a minimal kernel data-cache gadget that encodes one secret byte into a shared (\emph{C}-bit{=}0) 1\,MiB probe buffer. We further place this primitive in a Confidential Computing setting (SEV-SNP), clarifying that protection of data at rest/in transit does not preclude in-core transient effects. While we defer on-hardware measurements, the artifact provides A/B toggles (mitigations, aliasing pressure, gadget presence, microarchitecture) to falsify causality. The security implication is clear: on Zen~1/2, IBPB-on-entry alone is insufficient; practical defenses must sanitize return prediction on privilege transitions (e.g. RSB stuffing or untrained returns) or remove early \texttt{ret} sites along the entry path.
+We present \emph{PB-Inception}, a post–Indirect Branch Predictor Barrier (IBPB) speculative-execution primitive on AMD Zen~1(+)/Zen~2 processors. Contrary to the intended semantics of IBPB, we show that return-target predictions mistrained immediately before the barrier can persist across it and transiently redirect the first \texttt{ret} on kernel entry to an attacker-chosen gadget. We design a constructive, auditable proof-of-concept that (i) performs training entirely in transient execution using a backward-mispredicted conditional branch and a cascade of aliasing \texttt{call}s to bias return prediction, (ii) crosses a user{\textrightarrow}kernel boundary that executes \texttt{entry\_ibpb}, and (iii) speculatively lands in a minimal kernel data-cache gadget that encodes one secret byte into a shared (\emph{C}-bit{=}0) 1\,MiB probe buffer. We further place this primitive in a Confidential Computing light setting (SEV, SEV-ES), clarifying that protection of data at rest/in transit does not preclude in-core transient effects. While we defer on-hardware measurements, the artifact provides A/B toggles (mitigations, aliasing pressure, gadget presence, microarchitecture) to falsify causality. The security implication is clear: on Zen~1/2, IBPB-on-entry alone is insufficient; practical defenses must sanitize return prediction on privilege transitions (e.g. RSB stuffing or untrained returns) or remove early \texttt{ret} sites along the entry path.
 
-\section{Intoduction}
+\section{Introduction}
 
 \paragraph{Motivation}
 Confidential Computing (CC) aims to protect data \emph{in use} by executing workloads inside hardware-enforced isolated environments. While prior practice largely ensured confidentiality only \emph{at rest} or \emph{in transit}, CC brings protection into the CPU core, where data must be processed in cleartext. This shift raises a central question for microarchitectural security: to what extent do in-core transient effects, particularly those induced by speculative execution, interact with CC guarantees in deployed systems?
 
-\paragraph{Confidential Computing on AMD (SEV, SEV-ES, SEV-SNP)}
-On AMD platforms, Secure Encrypted Virtualization (SEV) encrypts guest physical memory using per-VM keys managed by the AMD Secure Processor (ASP). Decryption occurs on-the-fly inside the CPU pipeline and memory controller, the ASP manages keys and attestation state but does not perform data decryption itself. SEV-ES extends the protection boundary to CPU state (e.g. general-purpose registers during VM exits), and SEV-SNP further adds integrity and replay protection for guest memory and metadata. In all cases, memory remains encrypted outside the core and is decrypted only for the intended VM; whether a given page is encrypted is indicated by the SME \emph{C-bit}. Importantly, none of these mechanisms change the fact that transient execution may occur on decrypted lines in-core, nor do they, by themselves, neutralize microarchitectural side channels.
+\paragraph{Confidential Computing on AMD (SEV, SEV-ES)}
+On AMD platforms, Secure Encrypted Virtualization (SEV) encrypts guest physical memory using per-VM keys managed by the AMD Secure Processor (ASP). Decryption occurs on-the-fly inside the CPU pipeline and memory controller, the ASP manages keys and attestation state but does not perform data decryption itself. SEV-ES extends the protection boundary to CPU state (e.g. general-purpose registers during VM exits), and SEV-SNP would further add integrity and replay protection for guest memory and metadata. In all cases, memory remains encrypted outside the core and is decrypted only for the intended VM. For the Zen~1/Zen~2 systems we target, \textbf{only SEV/SEV‑ES are available}. Whether a given page is encrypted is indicated by the SME \emph{C-bit}. Importantly, none of these mechanisms change the fact that transient execution may occur on decrypted lines in-core, nor do they, by themselves, neutralize microarchitectural side channels.
 
 \paragraph{Speculative execution and side channels}
 Speculative execution predicts future control-flow to keep wide out-of-order pipelines busy. When a prediction is wrong, architectural state is rolled back, but microarchitectural footprints (e.g. cache fills, predictor state) may remain and can be observed via \emph{side channels}. A side-channel attack measures information indirectly exposed by the physical implementation, for example, execution time, cache-access patterns, power draw, or electromagnetic emanations, to infer secrets that should not be architecturally visible. Since Spectre, a broad literature has demonstrated that mistraining branch predictors (PHT/BTB/RSB and related structures) can steer transient control flow across isolation boundaries and encode secrets into observable microarchitectural state.
@@ -101,20 +101,20 @@ Speculative execution predicts future control-flow to keep wide out-of-order pip
 A common defense against cross-domain Spectre-BTI is the \emph{Indirect Branch Predictor Barrier} (IBPB), which software may execute on privilege or context transitions (e.g., on user$\rightarrow$kernel entry). The intended semantics are to sever cross-domain predictor influence. However, the efficacy of IBPB depends on microcode details and predictor composition. In particular, on AMD Zen~1(+)/Zen~2, return-target predictions produced just \emph{before} the barrier can persist \emph{across} IBPB and influence the first \texttt{ret} executed afterwards. This creates a narrow but reliable post-IBPB speculation window in which the first return on entry can be transiently redirected to an attacker-chosen gadget, unless software additionally sanitizes return prediction state (e.g. RSB stuffing or untrained returns on entry).
 
 \paragraph{This work: PB-Inception}
-We study and instantiate a post-IBPB speculative-execution primitive we term \emph{PB-Inception} on AMD Zen~1(+)/Zen~2. Our constructive pathway trains return prediction immediately before a user$\rightarrow$kernel transition that executes IBPB-on-entry and then leverages the first post-IBPB \texttt{ret} in the kernel entry path to speculatively jump into a minimal data-cache gadget. We further place the primitive in a Confidential Computing setting (SEV-SNP) \emph{without} violating the CC threat model: the gadget encodes one secret byte per entry into a deliberately shared, unencrypted buffer (\emph{C}-bit$=0$) that a host or helper can observe via \texttt{Flush+Reload}, while all protected data and architectural state remain covered by SEV-SNP. This separation clarifies what CC defends (confidentiality/integrity outside the core) and what it does not (in-core transient effects).
+We study and instantiate a post-IBPB speculative-execution primitive we term \emph{PB-Inception} on AMD Zen~1(+)/Zen~2. Our constructive pathway trains return prediction immediately before a user$\rightarrow$kernel transition that executes IBPB-on-entry and then leverages the first post-IBPB \texttt{ret} in the kernel entry path to speculatively jump into a minimal data-cache gadget. We further place the primitive in a Confidential Computing light setting (SEV, SEV-ES)\emph{without} violating the CC threat model: the gadget encodes one secret byte per entry into a deliberately shared, unencrypted buffer (\emph{C}-bit$=0$) that a host or helper can observe via \texttt{Flush+Reload}, while all protected data and architectural state remain covered by SEV and SEV-ES. This separation clarifies what CC light defends (confidentiality outside the core) and what it does not (in-core transient effects).
 
 \paragraph{Scope and evidence}
 Our artifact is designed to be auditable and falsifiable. It performs training entirely in transient execution, targets an early \texttt{ret} after \texttt{entry\_ibpb}, and provides A/B toggles (mitigations, aliasing pressure, gadget presence, microarchitecture) to isolate causality and guard against confounders. While we defer on-hardware measurements, the predicted observables (single-page cache hits at offsets proportional to the leaked byte and elevated branch-miss telemetry under active runs) follow directly from the code paths and microarchitectural mechanisms we exercise.
 
 \paragraph{Contributions (summary)}
-In brief, we (i) systematize a post-IBPB return-hijack primitive on Zen~1/2; (ii) provide a constructive, reproducible PoC that trains in transient execution and hijacks the first post-IBPB return; (iii) show how to integrate the primitive with SEV-SNP using a CC-compliant probe channel; and (iv) analyze where Linux entry paths and mitigation profiles defeat or permit the primitive. The detailed list appears in~\S\ref{sec:contribution}, with methodology in~\S\ref{sec:methodology} and a discussion of implications in~\S\ref{sec:results}.
+In brief, we (i) systematize a post-IBPB return-hijack primitive on Zen~1/2; (ii) provide a constructive, reproducible PoC that trains in transient execution and hijacks the first post-IBPB return; (iii) show how to integrate the primitive with SEV and SEV-ES using a CC-compliant probe channel; and (iv) analyze where Linux entry paths and mitigation profiles defeat or permit the primitive. The detailed list appears in~\S\ref{sec:contribution}, with methodology in~\S\ref{sec:methodology} and a discussion of implications in~\S\ref{sec:results}.
 
 % Related work some technical background
 % Available as an open source github project
 \section{Contribution}
 \label{sec:contribution}
 
-This work systematizes and instantiates a \emph{post‑IBPB} speculative execution primitive on AMD Zen~1(+)/Zen~2 that we term \textbf{PB‑Inception}: return‑target predictions, mistrained immediately \emph{before} an IBPB, persist \emph{across} the barrier and steer the first \texttt{ret} on kernel entry into an attacker‑chosen gadget. We then place this primitive in a Confidential Computing (CC) setting (SEV‑SNP), exfiltrating bytes into an intentionally shared, unencrypted buffer (\(C\)-bit=0) without violating the CC threat model. Concretely, our contributions are:
+This work systematizes and instantiates a \emph{post‑IBPB} speculative execution primitive on AMD Zen~1(+)/Zen~2 that we term \textbf{PB‑Inception}: return‑target predictions, mistrained immediately \emph{before} an IBPB, persist \emph{across} the barrier and steer the first \texttt{ret} on kernel entry into an attacker‑chosen gadget. We then place this primitive in a Confidential Computing light (CC light) setting (SEV, SEV-ES), exfiltrating bytes into an intentionally shared, unencrypted buffer (\(C\)-bit=0) without violating the CC threat model. Concretely, our contributions are:
 
 \begin{enumerate}
   \item \textbf{From INCEPTION to PB‑Inception, across the IBPB boundary.}
@@ -124,7 +124,7 @@ This work systematizes and instantiates a \emph{post‑IBPB} speculative executi
   We provide a self‑contained harness that: (i) \emph{trains in transient execution} (TTE) using a backward‑mispredicted \texttt{Jcc} to open a long speculative window; (ii) emits a cascade of 64 speculative \texttt{call}s whose \emph{return addresses} are deliberately chosen to alias a kernel gadget; (iii) crosses the user\(\rightarrow\)kernel boundary that executes \texttt{entry\_ibpb}; and (iv) speculatively lands in a minimal kernel DC gadget that loads one byte and encodes it at offset \(\texttt{val} \ll 12\) into a 1\,MiB probe buffer. None of the training calls retire architecturally; they only perturb return prediction state. The artifact is designed to be falsifiable via A/B toggles (mitigations, aliasing pressure, gadget presence, microarchitecture), aligning with best practice for Spectre‑style evaluation \cite{kocher2018spectre,trujillo2023inception,wikner2025breaking,linux_srso_doc,linux_rsb_doc}.
 
   \item \textbf{Confidential Computing instantiation without breaking the CC model.}
-  We demonstrate how the PB‑Inception primitive composes with SEV‑SNP: secrets remain encrypted at rest/in transit, yet transient execution still occurs on decrypted lines in‑core. By writing the covert‑channel signal to a shared (\(C\)-bit=0) buffer that the host can observe, we separate confidentiality at rest from in‑core speculation side‑effects, clarifying what CC defends (and what it does not) \cite{linux_srso_doc}. This provides a crisp threat translation from “classic” Spectre to CC deployments.
+  We demonstrate how the PB‑Inception primitive composes with SEV, SEV-ES: secrets remain encrypted at rest/in transit, yet transient execution still occurs on decrypted lines in‑core. By writing the covert‑channel signal to a shared (\(C\)-bit=0) buffer that the host can observe, we separate confidentiality at rest from in‑core speculation side‑effects, clarifying what CC defends (and what it does not) \cite{linux_srso_doc}. This provides a crisp threat translation from “classic” Spectre to CC deployments.
 
   \item \textbf{Mechanistic mapping of Linux entry and mitigations on Zen~1/2.}
   We identify a practical early \texttt{ret} site after \texttt{entry\_ibpb} on the Linux entry path and show how its speculative target can be steered by pre‑barrier training. We spell out conditions under which software mitigations defeat the attack (e.g. RSB stuffing/untrained returns or removal of early \texttt{ret} sites), and when they do not (IBPB‑on‑entry alone on Zen~1/2) \cite{linux_srso_doc,linux_rsb_doc,wikner2025breaking}. Our analysis complements vendor guidance on early‑frontend speculation/BTC and post‑barrier return prediction on AMD  \cite{amd2022btc,amd_software_spec,intel_pbrsb,intel_rrsba}.
@@ -166,15 +166,15 @@ For AMD Zen, the return predictor remains a privileged choke point: pre-barrier 
 \label{sec:methodology}
 
 \paragraph{Goal.}
-Demonstrate a post-IBPB Spectre primitive on AMD Family Zen~1(+)/2 whereby return-target predictions, mistrained before an IBPB, survive the barrier and steer the first ret in the kernel entry path to a chosen leak gadget (PB-Inception). We further instantiate the primitive in a Confidential Computing (CC) setting (AMD SEV-SNP) by exfiltrating secrets into an unencrypted shared buffer (C-bit=0) observable by the host.
+Demonstrate a post-IBPB Spectre primitive on AMD Family Zen~1(+)/2 whereby return-target predictions, mistrained before an IBPB, survive the barrier and steer the first ret in the kernel entry path to a chosen leak gadget (PB-Inception). We further instantiate the primitive in a Confidential Computing light (CC light) setting (AMD SEV, SEV-ES) by exfiltrating secrets into an unencrypted shared buffer (C-bit=0) observable by the host.
 
 \paragraph{Threat model.}
 An unprivileged attacker process (inside a Linux guest) aims to infer kernel-resident data across a user$\rightarrow$kernel boundary that issues IBPB-on-entry. The attacker controls userland code and can load a benign kernel module in the guest for experimental instrumentation. The host is passive and only performs measurements on a shared buffer. No architectural faults or privilege escalations are used.
 
 \paragraph{Preconditions.}
-(i) AMD Family~17h (Zen~1/2) where return-target predictions persist across IBPB; (ii) the Linux entry path executes entry\_ibpb (wrmsr to IBPB) and then performs an early ret; (iii) a kernel leak gadget reachable under speculative control, producing a cache-disclosed signal; (iv) CC flags present (SEV/SEV-ES/SEV-SNP) and availability of a guest page with C-bit cleared to act as a host-observable probe.%
+(i) AMD Family~17h (Zen~1/2) where return-target predictions persist across IBPB; (ii) the Linux entry path executes entry\_ibpb (wrmsr to IBPB) and then performs an early ret; (iii) a kernel leak gadget reachable under speculative control, producing a cache-disclosed signal; (iv) CC flags present (SEV/SEV-ES) and availability of a guest page with C-bit cleared to act as a host-observable probe.%
 
-The flags can under Linux be found with the command \texttt{lscpu} by checking the advertised flags "SEV", "SEV-ES", "SEV-SNP" in the following way:
+The flags can under Linux be found with the command \texttt{lscpu} by checking the advertised flags "SEV", "SEV-ES" in the following way:
 \begin{lstlisting}[language=bash]
 Architecture:        x86_64
 CPU op-mode(s):      32-bit, 64-bit
@@ -187,9 +187,9 @@ Core(s) per socket:  4
 Socket(s):           1
 NUMA node(s):        1
 Vendor ID:           AuthenticAMD
-CPU family:          25
-Model:               1
-Model name:          AMD EPYC 7B13
+CPU family:          23
+Model:               49
+Model name:          AMD EPYC 7R32 (Rome)
 Stepping:            0
 CPU MHz:             3049.994
 BogoMIPS:            6099.98
@@ -209,12 +209,36 @@ hypervisor lahf_lm cmp_legacy cr8_legacy abm sse4a misalignsse
 3dnowprefetch osvw topoext invpcid_single ssbd ibrs ibpb stibp 
 vmmcall fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid 
 rdseed adx smap clflushopt clwb sha_ni xsaveopt xsaves xgetbv1 
-clzero xsaveerptr arat npt nrip_save umip vaes sev sev-es sev-snp
+clzero xsaveerptr arat npt nrip_save umip sev sev-es
 \end{lstlisting}
 
-% Visualization of a exploit flow
 \subsubsection{Overview of the exploit flow}
-\label{sec:method:pb-inception:overview}
+\noindent\textbf{Attack flow.}
+Figure~\ref{fig:pb-inception-flow} shows the end-to-end PB-Inception workflow used in our artifact.
+(1) In guest user space, the attacker performs pre-IBPB training of the return predictor (Training in Transient Execution, TTE) using aliasing trampolines.
+(2) A system call crosses the IBPB boundary into the kernel.
+(3) Immediately after entry, an early \texttt{ret} in the entry/leak gadget is steered by the poisoned return predictor, triggering a transient control transfer.
+(4) The transient gadget reads a victim byte and encodes it via a data-dependent access to a 1\,MiB shared probe with C-bit~=~0 at \texttt{probe[(secret << 12)]}.
+(5) The host/observer recovers the byte using Flush+Reload over 256 pages.
+As an A/B control, \emph{IBPB-only} leaves the signal intact, whereas \emph{Safe-RET} (UNTRAIN\_RET/JMP2RET) removes it.
+
+% --- Figure (adds an entry to the List of Figures via the optional short title) ---
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{pdfs/attackFlowExploit.pdf}%
+  \caption[PB-Inception: attack flow and measurement path]%
+  {\textbf{PB-Inception: attack flow and measurement path.}
+   Left: pre-IBPB TTE training and the syscall that crosses the IBPB boundary.
+   Middle: kernel entry with IBPB, early \texttt{ret} in the entry/leak gadget, transient read of victim data (red data edge), and data-dependent encoding into a 1\,MiB shared probe (C-bit~=~0) at \texttt{probe[(secret << 12)]}.
+   Right: host-side Flush+Reload to reconstruct the byte.
+   Gray edges denote control/trigger flow (including the encoding access), the red edge denotes the data flow of the secret.
+   \emph{IBPB-only} $\Rightarrow$ leak; \emph{Safe-RET/UNTRAIN\_RET/JMP2RET} $\Rightarrow$ no leak.}
+  \label{fig:pb-inception-flow}
+\end{figure}
+
+
+
+
 PB-Inception proceeds in three phases:
 
 \begin{enumerate}
@@ -255,11 +279,11 @@ The cascade is arranged so no call retires, it only perturbs return predictions.
 Linux enters the kernel, executes \texttt{entry\_ibpb} (wrmsr to IBPB), then returns into the regular entry path. On AMD Zen1/2, IBPB does not invalidate return-target predictions; hence the first \texttt{ret} post-IBPB speculates to our gadget. We intentionally target a very early return in the entry path (before stack randomization) to maximize stability and cache-control over the speculation window.
 
 \paragraph{Covert channel and measurement.}
-The host (or a separate monitoring thread) performs Flush+Reload over the 1\,MiB probe (256 pages at 4\,KiB spacing). Each speculative byte sets exactly one page hot at offset \texttt{val\,$\ll$\,12}. For runs under SEV-SNP, we allocate the probe page(s) as shared (C-bit=0) and pass the guest-physical base to the LKM via \texttt{/sys/kernel/pbinc/probe}. This preserves the CC threat model while allowing the host to measure cache state.
+The host (or a separate monitoring thread) performs Flush+Reload over the 1\,MiB probe (256 pages at 4\,KiB spacing). Each speculative byte sets exactly one page hot at offset \texttt{val\,$\ll$\,12}. For runs under SEV / SEV-ES, we allocate the probe page(s) as shared (C-bit=0) and pass the guest-physical base to the LKM via \texttt{/sys/kernel/pbinc/probe}. This preserves the CC threat model while allowing the host to measure cache state.
 
-\subsubsection{Confidential Computing context (SEV-SNP)}
+\subsubsection{Confidential Computing light context (SEV / SEV-ES)}
 \label{sec:method:pb-inception:cc}
-We verify CC availability with \texttt{lscpu} flags \texttt{sev}, \texttt{sev-es}, and \texttt{sev-snp}. For leakage, the probe buffer must be \emph{unencrypted} (C-bit=0) so that a host Flush+Reload can observe the signal while the victim code and kernel data remain protected at rest. The core mechanism remains speculative and in-core: decrypted instructions/data are processed transiently even under SEV-SNP, and microarchitectural footprints on shared memory are observable.
+We verify CC light availability with \texttt{lscpu} flags \texttt{sev} and \texttt{sev-es}. For leakage, the probe buffer must be \emph{unencrypted} (C-bit=0) so that a host Flush+Reload can observe the signal while the victim code and kernel data remain protected at rest. The core mechanism remains speculative and in-core: decrypted instructions/data are processed transiently even under SEV/SEV-ES, and microarchitectural footprints on shared memory are observable.
 
 \subsubsection{Controls and validation}
 \label{sec:method:pb-inception:controls}
@@ -621,7 +645,7 @@ __slow_predicate_ptr:       dq 0           ; Points to mapped slow memory to del
 A subsequent \texttt{syscall} (\texttt{getpid}) causes the kernel to execute \texttt{entry\_ibpb} (wrmsr to IBPB) early in the entry path. On Zen~1/2, return-target predictions persist across IBPB, so the first post-IBPB \texttt{ret} speculates to \texttt{pbinc\_dc\_gadget} before normal control flow is recovered. The harness targets an early \texttt{ret}, increasing stability and channel strength.\cite{wikner2025breaking,amd_srso_whitepaper,linux_srso_doc}
 
 \paragraph{Covert channel and measurement.}
-The probe buffer is guest-mapped but backed by guest-physical pages with C-bit cleared (C-bit=0) and ioremapped cached in the kernel. Each leaked byte heats exactly one 4\,KiB page at offset \texttt{val $\ll$ 12}. A host or helper thread can recover the symbol via Flush+Reload over the 256-page probe, while the victim code and other kernel data remain encrypted at rest under SEV-SNP.\cite{linux_srso_doc}
+The probe buffer is guest-mapped but backed by guest-physical pages with C-bit cleared (C-bit=0) and ioremapped cached in the kernel. Each leaked byte heats exactly one 4\,KiB page at offset \texttt{val $\ll$ 12}. A host or helper thread can recover the symbol via Flush+Reload over the 256-page probe, while the victim code and other kernel data remain encrypted at rest under SEV/SEV-ES.\cite{linux_srso_doc}
 
 \subsection{Expected end-to-end behaviour}
 With \texttt{TRAMP\_COUNT}=64 and a correctly tuned \texttt{ALIAS\_MASK}, a single user$\rightarrow$kernel transition is sufficient to speculatively execute the gadget and encode one byte per event. The predicted measurement is a unimodal latency minimum on exactly one probe page matching the secret byte. Perf-level telemetry during active runs should show elevated branch misses and machine clears compared to an idle baseline. All of these predictions follow directly from the code paths and the attacker-controlled timing of the transient window.\cite{wikner2025breaking}
@@ -662,8 +686,8 @@ With \texttt{TRAMP\_COUNT}=64 and a correctly tuned \texttt{ALIAS\_MASK}, a sing
 \emph{CC plumbing errors.} If the probe is encrypted (C-bit=1), host-observable Flush+Reload fails even though intra-core speculation still occurs, the mitigation appears indistinguishable from a negative microarchitectural result without local timing.  
 \emph{Noise sources.} Competing activity on the same core, TLB shootdowns, and unrelated I-cache fills reduce the transient window, pinning and isolating the core stabilise outcomes. All of these behaviours are anticipated by the harness design and control toggles in \S\ref{sec:method:pb-inception:controls}.\cite{linux_srso_doc,linux_rsb_doc,wikner2025breaking}
 
-\subsection{Implications for confidential computing (SEV-SNP)}
-SEV-SNP ensures memory confidentiality/integrity at rest and in transit, it does not preclude in-core transient execution on decrypted lines. Our PoC respects the CC threat model (no architectural compromise, no key disclosure) yet still exfiltrates one byte per entry by writing into a deliberately shared (unencrypted) buffer. Consequently, CC deployments that depend solely on IBPB-on-entry on Zen~1/2 remain vulnerable to PB-Inception unless they add RSB sanitisation or remove early returns on kernel entry. The result is consistent with our methodology and artifact semantics in \S\ref{sec:method:pb-inception:cc}.\cite{wikner2025breaking,linux_srso_doc}
+\subsection{Implications for confidential computing light (SEV/-SEV-ES)}
+SEV/SEV-ES ensures memory confidentiality at rest and in transit, it does not preclude in-core transient execution on decrypted lines. Our PoC respects the CC threat model (no architectural compromise, no key disclosure) yet still exfiltrates one byte per entry by writing into a deliberately shared (unencrypted) buffer. Consequently, CC deployments that depend solely on IBPB-on-entry on Zen~1/2 remain vulnerable to PB-Inception unless they add RSB sanitisation or remove early returns on kernel entry. The result is consistent with our methodology and artifact semantics in \S\ref{sec:method:pb-inception:cc}.\cite{wikner2025breaking,linux_srso_doc}
 
 % Integrate it to Results and Discussion
 % How to run markdown -> on github
@@ -677,15 +701,15 @@ Even without hardware measurements, the PoC provides a complete, auditable chain
 \section{Conclusion}
 \label{sec:conclusion}
 
-This work systematizes and instantiates a \emph{post–IBPB} speculative–execution primitive on AMD Zen~1(+)/Zen~2 that we call \textsc{PB-Inception}. We show that return–target predictions mistrained immediately before an IBPB can persist across the barrier and transiently steer the first \texttt{ret} on kernel entry to a minimal, auditable data–cache gadget. Our constructive pathway trains entirely in transient execution, crosses a user$\rightarrow$kernel boundary that executes \texttt{entry\_ibpb}, and encodes one secret byte per entry into a 1\,MiB probe buffer, yielding a high-SNR signal that is easy to validate with standard Flush+Reload. We further demonstrate how the primitive composes with SEV-SNP without violating the Confidential Computing (CC) threat model: data remain encrypted at rest/in transit while in-core transient effects on shared, unencrypted buffers remain observable.
+This work systematizes and instantiates a \emph{post–IBPB} speculative–execution primitive on AMD Zen~1(+)/Zen~2 that we call \textsc{PB-Inception}. We show that return–target predictions mistrained immediately before an IBPB can persist across the barrier and transiently steer the first \texttt{ret} on kernel entry to a minimal, auditable data–cache gadget. Our constructive pathway trains entirely in transient execution, crosses a user$\rightarrow$kernel boundary that executes \texttt{entry\_ibpb}, and encodes one secret byte per entry into a 1\,MiB probe buffer, yielding a high-SNR signal that is easy to validate with standard Flush+Reload. We further demonstrate how the primitive composes with SEV/SEV-ES without violating the Confidential Computing light (CC light) threat model: data remain encrypted at rest/in transit while in-core transient effects on shared, unencrypted buffers remain observable.
 
-From a defensive standpoint, the takeaway is sharp: on Zen~1/2, \emph{IBPB-on-entry alone is insufficient}. Practical deployments must additionally sanitize return prediction on privilege transitions (e.g. RSB stuffing or untrained returns) or eliminate early \texttt{ret} sites along the entry path. These requirements are consistent current kernel guidance and put control in software when microcode lacks stronger post-barrier semantics in microcode.
+From a defensive standpoint, the takeaway is sharp: on Zen~1/2, \emph{IBPB-on-entry alone is insufficient}. Practical deployments must additionally sanitize return prediction on privilege transitions (e.g. RSB stuffing or untrained returns) or eliminate early \texttt{ret} sites along the entry path. These requirements are consistent with current kernel guidance and put control in software when microcode lacks stronger post-barrier semantics.
 
 \paragraph{Implications.}
 \begin{itemize}
-  \item \textbf{Privilege transitions.} Sanitizing return prediction on user$\rightarrow$kernel entry closes the narrow but reliable post-IBPB window we exploit. When enabled, RSB stuffing/untrained returns remove our speculative landing path; when disabled, the signal would reappears.
+  \item \textbf{Privilege transitions.} Sanitizing return prediction on user$\rightarrow$kernel entry closes the narrow but reliable post-IBPB window we exploit. When enabled, RSB stuffing/untrained returns remove our speculative landing path; when disabled, the signal reappears.
   \item \textbf{Entry-path engineering.} Removing or delaying early \texttt{ret} sites after \texttt{entry\_ibpb} reduces exploitable targets and shortens the speculation window. Auditing these paths should be part of standard hardening on Zen~1/2 systems that rely on IBPB.
-  \item \textbf{CC deployments.} SEV-SNP protects confidentiality at rest and in transit but does not preclude in-core transient execution on decrypted lines. CC operators should pair IBPB with return–prediction hygiene and avoid shared (C-bit\,$=0$) mappings unless strictly necessary.
+  \item \textbf{CC deployments.} SEV/SEV-ES protects confidentiality at rest and in transit but does not preclude in-core transient execution on decrypted lines. CC operators should pair IBPB with return–prediction hygiene and avoid shared (C-bit\,$=0$) mappings unless strictly necessary.
 \end{itemize}
 
 \paragraph{Limitations and scope.}
@@ -696,6 +720,10 @@ We provide a reproducible blueprint, kernel gadget, user-space training harness,
 
 \section*{Acknowledgements}
 This work benefited from the guidance and support of several colleagues. We thank \textbf{G\"urkan G\"ur} for supervising the project, \textbf{Jennifer Studer} for advising on the structure of the manuscript, \textbf{J\'erome Cristiano} for assistance with naming the exploit, and \textbf{Antonia Hinkerohe} for targeted feedback on specific chapters.
+
+\section{List of figures}
+\renewcommand{\listtablename}{}
+\listoftables
 
 \bibliography{refs}
 
