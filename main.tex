@@ -180,8 +180,9 @@ For AMD Zen, the return predictor remains a privileged choke point: pre-barrier 
 \renewcommand{\arraystretch}{1.15}
 
 \begin{longtable}{@{}%
-  P{0.16\linewidth} % Attack / Targeted structure (Post-IBPB?)
-  P{0.12\linewidth} % Attacker model / boundary
+  P{0.10\linewidth} % Attack / Targeted structure (Post-IBPB?)
+  P{0.10\linewidth} % Attacker model / boundary
+  P{0.08\linewidth} % Target processor
   P{0.13\linewidth} % Preconditions
   P{0.16\linewidth} % Effective mitigations
   P{0.15\linewidth} % OS/µcode knobs
@@ -195,6 +196,7 @@ For AMD Zen, the return predictor remains a privileged choke point: pre-barrier 
 \toprule
 \textbf{Attack / Targeted structure (Post‑IBPB?)} &
 \textbf{Attacker model / boundary} &
+\textbf{Target processor} &
 \textbf{Preconditions} &
 \textbf{Effective mitigations (what actually stops it)} &
 \textbf{OS/\,$\mu$code knobs (Linux / CPUID)} &
@@ -208,6 +210,7 @@ For AMD Zen, the return predictor remains a privileged choke point: pre-barrier 
 \toprule
 \textbf{Attack / Targeted structure (Post‑IBPB?)} &
 \textbf{Attacker model / boundary} &
+\textbf{Target processor} &
 \textbf{Preconditions} &
 \textbf{Effective mitigations (what actually stops it)} &
 \textbf{OS/\,$\mu$code knobs (Linux / CPUID)} &
@@ -226,15 +229,17 @@ For AMD Zen, the return predictor remains a privileged choke point: pre-barrier 
 
 \textbf{Spectre v1 (PHT) \cite{kocher2018spectre} (No)} &
 Same‑process; cross‑sandbox/JIT; sometimes cross‑process &
+Intel (Ivy Bridge, Haswell, Skylake), AMD Ryzen, ARM cores (Samsung/Qualcomm mobile chips)&
 Bounds‑check bypass on mispredicted conditional; timer/eviction primitive &
 Bounds‑check hardening; compiler SLH; masking; LFENCE/speculation barriers (IBPB/RSB not primary) &
 Compiler flags (SLH); kernel hardening hooks; some trees expose \texttt{nospectre\_v1} &
 Yes; many PoCs since 2018 &
 Flush+Reload; Prime+Probe (varies) &
 Intra‑VM leakage; host observation requires shared C‑bit{=}0 mapping \\
-
+\hline
 \textbf{Spectre v2 (BTB/indirect) \cite{kocher2018spectre} (No / IBPB mitigates)} &
 Cross‑process; user$\rightarrow$kernel; cross‑VM variants &
+Intel (Ivy Bridge, Haswell, Skylake), AMD Ryzen, ARM cores (Samsung/Qualcomm mobile chips)&
 Indirect‑branch poisoning; suitable training; timer &
 IBRS, IBPB, STIBP; retpoline (RSB stuffing helps returns only) &
 \texttt{spectre\_v2=*}, \texttt{spectre\_v2\_user=
@@ -242,9 +247,10 @@ prctl,ibpb}; CPUID: \texttt{ibrs}, \texttt{ibpb}, \texttt{stibp} &
 Yes; widely reproduced &
 Flush+Reload; Prime+Probe &
 Same as above; host timing needs shared C‑bit{=}0 page \\
-
+\hline
 \textbf{SpectreRSB (RSB) \cite{koruyeh2018spectrersb} (No)} &
 User$\rightarrow$kernel; cross‑thread/process on same core &
+Intel (Haswell, Skylake, Xeon), any that uses an RSB&
 RSB underflow/overfill; entry without RSB sanitization; early \texttt{ret} reachable &
 RSB stuffing on entry; untrained‑return (Safe‑RET) thunks on entry &
 \texttt{spec\_rstack\_overflow=
@@ -252,9 +258,10 @@ safe-ret} (Linux); RSB clear/stuff on switch &
 Yes; public PoCs &
 Flush+Reload (typical) &
 Works intra‑guest; host view requires shared C‑bit{=}0 \\
-
+\hline
 \textbf{ret2spec (RSB) \cite{maisuradze2018ret2spec} (No)} &
 Same‑process and cross‑thread; user$\rightarrow$kernel variants &
+Intel x86&
 RSB pollution; suitable return window; timer &
 RSB stuffing; Safe‑RET thunks; remove early returns on entry path &
 \texttt{spec\_rstack\_overflow=
@@ -262,9 +269,10 @@ safe-ret} (Linux) &
 Yes; PoC in paper &
 Flush+Reload &
 As above (shared C‑bit{=}0 for host‑visible channel) \\
-
+\hline
 \textbf{INCEPTION / SRSO / TTE \cite{trujillo2023inception} (Yes)} &
 User$\rightarrow$kernel; AMD Zen gens &
+AMD (Zen 1, Zen 2, Zen 3, Zen 4)&
 Pre‑entry return‑prediction poisoning; early \texttt{ret} after entry; IBPB‑only; timer &
 Untrained‑return / Safe‑RET (AMD \textit{JMP2RET}); entry sanitization; IBPB alone insufficient on Zen 1/2 &
 \texttt{spec\_rstack\_overflow=
@@ -272,8 +280,9 @@ safe-ret}; vendor microcode; CPUID enumerates SRSO mitigations (where present) &
 Yes; PoCs and vendor guidance &
 Flush+Reload (typical) &
 CC‑light: still leaks in‑core; host needs shared C‑bit{=}0 page \\
-
+\hline
 \textbf{SRSO mitigation (Linux/vendor) \cite{linux_srso_doc,amd_srso_whitepaper} (Mitigation)} &
+N/A &
 N/A &
 N/A &
 Safe‑RET / untrained‑return thunks at entry; optional RSB stuffing; policy on IBPB use &
@@ -282,9 +291,10 @@ Safe‑RET / untrained‑return thunks at entry; optional RSB stuffing; policy o
 N/A (guidance) &
 N/A &
 Prevents return‑hijack paths irrespective of CC \\
-
+\hline
 \textbf{Generic mitigations (survey) \cite{kocher2018spectre,linux_srso_doc,linux_rsb_doc} (By variant)} &
 V1: same‑proc/cross‑sandbox; V2: cross‑proc/user$\rightarrow$kernel; Meltdown separate &
+N/A &
 V1: bounds‑check bypass; V2: indirect‑branch poisoning &
 V1: hardening, SLH, LFENCE; Meltdown: KPTI; V2: IBRS/IBPB/Retpoline (RSB only for returns) &
 Linux knobs above; compiler options; microcode (IBRS/IBPB) &
