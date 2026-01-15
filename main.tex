@@ -108,7 +108,39 @@ On AMD platforms, Secure Encrypted Virtualization (SEV) encrypts guest physical 
 Speculative execution predicts future control-flow to keep wide out-of-order pipelines busy. When a prediction is wrong, architectural state is rolled back, but microarchitectural footprints (e.g. cache fills, predictor state) may remain and can be observed via \emph{side channels}. A side-channel attack measures information indirectly exposed by the physical implementation, for example, execution time, cache-access patterns, power draw, or electromagnetic emanations, to infer secrets that should not be architecturally visible. Since Spectre, a broad literature has demonstrated that mistraining branch predictors (PHT/BTB/RSB and related structures) can steer transient control flow across isolation boundaries and encode secrets into observable microarchitectural state.
 
 \paragraph{IBPB and post-barrier prediction state}
-A common defense against cross-domain Spectre-BTI is the \emph{Indirect Branch Predictor Barrier} (IBPB), which software may execute on privilege or context transitions (e.g., on user$\rightarrow$kernel entry). The intended semantics are to sever cross-domain predictor influence. However, the efficacy of IBPB depends on microcode details and predictor composition. In particular, on AMD Zen~1(+)/Zen~2, return-target predictions produced just \emph{before} the barrier can persist \emph{across} IBPB and influence the first \texttt{ret} executed afterwards. This creates a narrow but reliable post-IBPB speculation window in which the first return on entry can be transiently redirected to an attacker-chosen gadget, unless software additionally sanitizes return prediction state (e.g. RSB stuffing or untrained returns on entry).
+A common defense against cross-domain Spectre-BTI is the \emph{Indirect Branch Predictor Barrier} (IBPB), which software may execute on privilege or context transitions (e.g. on user$\rightarrow$kernel entry). The intended semantics are to sever cross-domain predictor influence. However, the efficacy of IBPB depends on microcode details and predictor composition. In particular, on AMD Zen~1(+)/Zen~2, return-target predictions produced just \emph{before} the barrier can persist \emph{across} IBPB and influence the first \texttt{ret} executed afterwards. This creates a narrow but reliable post-IBPB speculation window in which the first return on entry can be transiently redirected to an attacker-chosen gadget, unless software additionally sanitizes return prediction state (e.g. RSB stuffing or untrained returns on entry).
+
+\paragraph{Timing Side-channel attacks}
+These side-channel attacks exploit the timing differences caused by whether the data is cached or not.  
+\begin{itemize}
+  \item \textbf{Flush+Reload}
+The attacker shares memory with victim (e.g., shared library page or C-bit=0 page in SEV), then the attacker flushes a cache line (via clflush). After that the victim accesses the memory (possibly transiently).
+The attacker reloads and measures timing: if it's fast it means that the victim accessed it, if it's slow the victim did not.
+  \item \textbf{Prime+Probe}
+The attacker fills a cache set with own data, the victim executes, then the attacker measures which lines were evicted, revealing the victim’s accesses.
+It also works without shared memory, but the precision is lower.  
+  \item \textbf{Evict+Reload}
+It works like Flush+Reload, but the eviction is done with cache-thrashing instead of using clflush.
+\end{itemize}
+
+\paragraph{Mitigations}
+\begin{itemize}
+  \item \textbf{Context switch (user$\rightarrow$user): IBPB and/or RSB filling} When switching from one user process to another, the kernel must prevent the new process from inheriting branch-prediction state from the previous one
+  \begin{itemize}
+    \item \textbf{IBPB (Indirect Branch Predictor Barrier)} A hardware instruction that clears indirect-branch prediction state.
+    \item \textbf{RSB filling} The kernel overwrites the Return Stack Buffer with dummy return addresses to avoid the attacker influencing return-address speculation.
+  \end{itemize}
+  \item \textbf{User$\leftrightarrow$Kernel transitions} When switching between user mode and kernel mode, the kernel must avoid speculating on attacker-controlled targets
+    \begin{itemize}
+    \item \textbf{SMEP/SMAP} Hardware features that prevent the kernel from executing or accessing user memory—even speculatively.
+    \item \textbf{(e)IBRS} Indirect Branch Restricted Speculation (enhanced IBRS) blocks the kernel from using user-mode branch history when predicting indirect branches.
+    \item \textbf{BHI / RRSBA mitigations} These deal with Branch History Injection and Return/Retpoline Stack Buffer Array attacks. They involve clearing branch history on entry/exit and sometimes using IBPB again depending on policy.
+  \end{itemize}
+  \item \textbf{Return-path hardening for RETbleed/SRSO} They use return thunks to reduce dependence on RSB state.
+    \begin{itemize}
+    \item \textbf{Return thunks} A special code sequences that replace direct RET instructions with safer constructs that do not rely on RSB state. This prevents attackers from poisoning return predictions.
+  \end{itemize}
+\end{itemize}
 
 \paragraph{This work: PB-Inception}
 We study and instantiate a post-IBPB speculative-execution primitive we term \emph{PB-Inception} on AMD Zen~1(+)/Zen~2. Our constructive pathway trains return prediction immediately before a user$\rightarrow$kernel transition that executes IBPB-on-entry and then leverages the first post-IBPB \texttt{ret} in the kernel entry path to speculatively jump into a minimal data-cache gadget. We further place the primitive in a Confidential Computing light setting (SEV, SEV-ES)\emph{without} violating the CC threat model: the gadget encodes one secret byte per entry into a deliberately shared, unencrypted buffer (\emph{C}-bit$=0$) that a host or helper can observe via \texttt{Flush+Reload}, while all protected data and architectural state remain covered by SEV and SEV-ES. This separation clarifies what CC light defends (confidentiality outside the core) and what it does not (in-core transient effects).
@@ -171,6 +203,141 @@ Linux now documents SRSO/RSB mitigations (IBPB strategies, untrained returns, RS
 
 \paragraph{Takeaway.}
 For AMD Zen, the return predictor remains a privileged choke point: pre-barrier mistraining plus post-barrier retention under specific IBPB configurations yields PB-Inception-style cross-privilege leaks. Comprehensive defenses require both correct barrier semantics in microcode \emph{and} software-side RSB sanitization at the right points in the control-flow transitions \cite{wikner2025breaking,trujillo2023inception,linux_srso_doc}.
+
+\begin{landscape}
+\begin{table}[t] \centering \vspace*{-1.2\baselineskip}\end{table} % keep float spacing happy
+
+\begin{small}
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.15}
+
+\begin{longtable}{@{}%
+  P{0.12\linewidth} %
+  P{0.10\linewidth} %
+  P{0.14\linewidth} %
+  P{0.14\linewidth} %
+  P{0.14\linewidth} %
+  P{0.14\linewidth} %
+  P{0.12\linewidth} %
+@{}}
+\caption{Related work overview. “Post‑IBPB?” indicates whether the path relies on prediction state persisting across an IBPB boundary.}
+\label{tab:related-work-overview}\\
+
+\toprule
+\textbf{Attack name} &
+\textbf{Post-IBPB} &
+\textbf{Attack type} &
+\textbf{Attack model} &
+\textbf{Target processors} &
+\textbf{Mitigations} &
+\textbf{Side channel} \\
+\midrule
+\endfirsthead
+
+\multicolumn{7}{l}{\small\itshape Table \thetable\ (continued)}\\
+\toprule
+\textbf{Attack name} &
+\textbf{Post-IBPB} &
+\textbf{Attack type} &
+\textbf{Attack model} &
+\textbf{Target processors} &
+\textbf{Mitigations} &
+\textbf{Side channel} \\
+\midrule
+\endhead
+
+\midrule
+\multicolumn{7}{r}{\small\itshape Continued on next page}
+\endfoot
+
+\bottomrule
+\endlastfoot
+
+\textbf{Spectre v1 / Spectre-BCB, (bounds check bypass) \cite{kocher2018spectre}} &
+No &
+Conditional-branch misprediction targeting the branch predictor/history (PHT) &
+Same-process &
+Intel (Ivy Bridge, Haswell, Skylake), AMD Ryzen, ARM cores (Samsung/Qualcomm mobile chips) &
+Serializing instructions (mfence, lfence or cpuid), LFENCE/speculation barriers &
+Flush+Reload, Evict+Reload  \\
+\hline
+
+\textbf{Spectre v2 / Spectre-BTI (branch target injection)
+ \cite{kocher2018spectre}} &
+No &
+Indirect-branch poisoning targeting the Branch Target Buffer &
+Cross-process &
+Intel (Haswell, Skylake) &
+IBRS, IBPB, STIBP, Retpoline &
+Flush+Reload \\
+\hline
+
+\textbf{SpectreRSB \cite{koruyeh2018spectrersb}} &
+No &
+Spectre-class targeting the Return Stack Buffer &
+Same-process, Cross-process, Cross-thread &
+Intel Core i7 (Haswell, Skylake, Skylake+), Intel Xeon E5-1620, any that uses an RSB should work &
+RSB stuffing, Safe-RET, SMEP, KPTI (Kernel Page-Table Isolation) &
+Flush+Reload, Prime+Probe \\
+\hline
+
+\textbf{ret2spec \cite{maisuradze2018ret2spec}} &
+No &
+RSB-based speculative-execution &
+cross-process &
+Intel x86 &
+RSB stuffing, Safe-RET &
+Flush+Reload, Prime+Probe \\
+\hline
+
+\textbf{INCEPTION \cite{trujillo2023inception}} &
+No &
+Training in Transient Execution (end-to-end exploit) targeting the Return Stack Buffer &
+User $\rightarrow$ Kernel &
+AMD (Zen 1, Zen 2, Zen 3, Zen 4) &
+Safe-RET, IBPB (Zen 1, Zen 2 only) &
+Flush+Reload, Prime+Probe \\
+\hline
+
+\textbf{RETBLEED \cite{wikner2022retbleed}} &
+No &
+Kernel-level speculative code execution targeting the Branch Target Buffer &
+Unprivileged User Process $\rightarrow$ Kernel &
+AMD (Zen 1, Zen 2), Intel (Kaby Lake, Coffee Lake) &
+Intel (eIBRS and IBRS), AMD (jmp2ret) &
+Flush+Reload, Prime+Probe \\
+\hline
+
+\textbf{PB-RRSBA \cite{wikner2025breaking}} &
+Yes &
+Exploit IP-based predictions of the Restricted RSB Alternate (RRSBA) predictor &
+Cross-process &
+Intel (Golden Cove, Raptor Cove) &
+Enabling the RRSBA\_DIS\_U chicken bit &
+Flush+Reload \\
+\hline
+
+\textbf{PB-Inception \cite{wikner2025breaking}} &
+Yes &
+Variant of Inception attack targeting Return Stack Buffer predictions &
+Cross-process &
+AMD (Zen 1, Zen 2) &
+RSB stuffing &
+Secret-dependent cache side channel \\
+\hline
+
+\textbf{PHANTOM \cite{wikner2023phantom}} &
+No &
+Confuse the CPU's branch prediction unit by using asymmetric combinations of training and victim instruction types &
+Execute unprivileged code on top of a recent Linux kernel &
+AMD (Zen 1, Zen 2, Zen 3, Zen 4) &
+SuppressBPOnNonBr (AMD MSR), AutoIBRS (AMD Zen 4), IBPB &
+Flush+Reload, Prime+Probe \\
+\hline
+
+\end{longtable}
+\end{small}
+\end{landscape}
 
 \begin{landscape}
 \begin{table}[t] \centering \vspace*{-1.2\baselineskip}\end{table} % keep float spacing happy
@@ -614,6 +781,17 @@ module_exit(pbinc_exit);
 MODULE_LICENSE("GPL");
 \end{lstlisting}
 
+\begin{landscape}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{pdfs/pbinc_gadget_functionality.drawio.pdf}%
+  \caption[Gadget functionality]%
+  {\textbf{Gadget functionality}
+   Schema showing the functionality of the pbinc kernel gadget}
+  \label{fig:pbinc_gadget_functionality}
+\end{figure}
+\end{landscape}
+
 \paragraph{Return-address aliasing trampolines.}
 User space JIT-builds 64 (\texttt{TRAMP\_COUNT}) RX trampolines whose \emph{return addresses} (RAs) share a low-bit alias class with the gadget VA (\texttt{ALIAS\_MASK = 0xFFFFF}). For each candidate stub, we accept only if \((\texttt{RA} \,\&\, \texttt{ALIAS\_MASK}) = (\texttt{gaddr} \,\&\, \texttt{ALIAS\_MASK})\). When executed transiently, calls to these stubs push colliding RAs and bias the return predictor toward the gadget. The builder aborts if it cannot populate all 64 entries, ensuring deterministic setup.\cite{wikner2022retbleed,trujillo2023inception,wikner2023phantom}
 
@@ -719,6 +897,29 @@ void *pbinc_create_trampolines(uint64_t gadget_addr) {
 }
 \end{lstlisting}
 
+\begin{landscape}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{pdfs/pbinc_trampoline_functionality.drawio.pdf}%
+  \caption[Trampolines functionality]%
+  {\textbf{Trampolines functionality}
+   Schema showing the functionality of the return-address aliasing trampolines.  
+   A small but important part that's omitted in the schema is the piece of code shown below:  
+   }
+  \label{fig:pbinc_trampoline_functionality}
+
+\end{figure}
+
+\begin{lstlisting}[language={[x86masm]Assembler}, caption={This part of the code allows the mapping of the memory to happen very slowly, so that it happens after the comparison with 0xdeadbeef and therefore it will jump to the call cascade.}, label={lst:slow-memory-map}]
+mov  rdx, [rel __slow_predicate_ptr]  ; runtime: slow mapped memory
+mov  rax, [rdx]
+cmp  rax, 0xdeadbeef
+je   .speculative_call_cascade        ; backward Jcc (target above)
+\end{lstlisting}
+
+\end{landscape}
+
+
 \paragraph{Training-in-Transient-Execution (TTE) call cascade.}
 The assembly harness \texttt{pbinc\_entry} executes a forward skip, then a backward \texttt{JE} whose predicate is delayed by reading from \texttt{\_\_slow\_predicate\_ptr}. In the mispredicted path, it issues a loop of 64 \texttt{call} sites via \texttt{\_\_alias\_tbl[i]}; none of these calls retire architecturally. This strictly-transient cascade overflows and biases return prediction state without observable architectural side effects.\cite{trujillo2023inception}
 
@@ -783,6 +984,17 @@ __slow_predicate_ptr:       dq 0           ; Points to mapped slow memory to del
 ; Slow memory because: Because we want the CPU to speculate into the training block before it knows whether the branch
 ; is actually taken or not.
 \end{lstlisting}
+
+\begin{landscape}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{pdfs/pbinc_asm_functionality.drawio.pdf}%
+  \caption[Assembly harness functionality]%
+  {\textbf{Assembly harness functionality}
+   Schema showing the functionality of the assembly harness used in the TTE call cascade}
+  \label{fig:pbinc_asm_functionality}
+\end{figure}
+\end{landscape}
 
 \paragraph{Crossing IBPB and hijacking the first return.}
 A subsequent \texttt{syscall} (\texttt{getpid}) causes the kernel to execute \texttt{entry\_ibpb} (wrmsr to IBPB) early in the entry path. On Zen~1/2, return-target predictions persist across IBPB, so the first post-IBPB \texttt{ret} speculates to \texttt{pbinc\_dc\_gadget} before normal control flow is recovered. The harness targets an early \texttt{ret}, increasing stability and channel strength.\cite{wikner2025breaking,amd_srso_whitepaper,linux_srso_doc}
@@ -967,5 +1179,16 @@ int main(int argc, char **argv) {
     return 0;
 }
 \end{lstlisting}
+
+\begin{landscape}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{pdfs/pbinc_driver_functionality.drawio.pdf}%
+  \caption[Driver functionality]%
+  {\textbf{Driver functionality}
+   Schema showing the functionality of the driver that connects all the components}
+  \label{fig:pbinc_driver_functionality}
+\end{figure}
+\end{landscape}
 
 \end{document}
