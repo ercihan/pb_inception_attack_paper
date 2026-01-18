@@ -208,11 +208,13 @@ For AMD Zen, the return predictor remains a privileged choke point: pre-barrier 
 
 \begin{longtable}{@{}%
   P{0.12\linewidth} %
+  P{0.04\linewidth} %
+  P{0.12\linewidth} %
+  P{0.10\linewidth} %
+  P{0.12\linewidth} %
   P{0.10\linewidth} %
   P{0.14\linewidth} %
-  P{0.14\linewidth} %
-  P{0.14\linewidth} %
-  P{0.14\linewidth} %
+  P{0.12\linewidth} %
   P{0.12\linewidth} %
 @{}}
 \caption{Related work overview. “Post‑IBPB?” indicates whether the path relies on prediction state persisting across an IBPB boundary.}
@@ -223,9 +225,11 @@ For AMD Zen, the return predictor remains a privileged choke point: pre-barrier 
 \textbf{Post-IBPB} &
 \textbf{Attack type} &
 \textbf{Attack model} &
+\textbf{Preconditions} &
 \textbf{Target processors} &
 \textbf{Mitigations} &
-\textbf{Side channel} \\
+\textbf{Side channel} &
+\textbf{CC Impact} \\
 \midrule
 \endfirsthead
 
@@ -235,9 +239,11 @@ For AMD Zen, the return predictor remains a privileged choke point: pre-barrier 
 \textbf{Post-IBPB} &
 \textbf{Attack type} &
 \textbf{Attack model} &
+\textbf{Preconditions} &
 \textbf{Target processors} &
 \textbf{Mitigations} &
-\textbf{Side channel} \\
+\textbf{Side channel} &
+\textbf{CC Impact} \\
 \midrule
 \endhead
 
@@ -252,9 +258,11 @@ For AMD Zen, the return predictor remains a privileged choke point: pre-barrier 
 No &
 Conditional-branch misprediction targeting the branch predictor/history (PHT) &
 Same-process &
+Bounds‑check bypass on mispredicted conditional; timer/eviction primitive &
 Intel (Ivy Bridge, Haswell, Skylake), AMD Ryzen, ARM cores (Samsung/Qualcomm mobile chips) &
 Serializing instructions (mfence, lfence or cpuid), LFENCE/speculation barriers &
-Flush+Reload, Evict+Reload  \\
+Flush+Reload, Evict+Reload  &
+Intra‑VM leakage; host observation requires shared C‑bit{=}0 mapping \\
 \hline
 
 \textbf{Spectre v2 / Spectre-BTI (branch target injection)
@@ -262,72 +270,88 @@ Flush+Reload, Evict+Reload  \\
 No &
 Indirect-branch poisoning targeting the Branch Target Buffer &
 Cross-process &
+Indirect‑branch poisoning; suitable training; timer &
 Intel (Haswell, Skylake) &
 IBRS, IBPB, STIBP, Retpoline &
-Flush+Reload \\
+Flush+Reload &
+Same as above; host timing needs shared C‑bit{=}0 page \\
 \hline
 
 \textbf{SpectreRSB \cite{koruyeh2018spectrersb}} &
 No &
 Spectre-class targeting the Return Stack Buffer &
 Same-process, Cross-process, Cross-thread &
+RSB underflow/overfill; entry without RSB sanitization; early \texttt{ret} reachable &
 Intel Core i7 (Haswell, Skylake, Skylake+), Intel Xeon E5-1620, any that uses an RSB should work &
 RSB stuffing, Safe-RET, SMEP, KPTI (Kernel Page-Table Isolation) &
-Flush+Reload, Prime+Probe \\
+Flush+Reload, Prime+Probe &
+Works intra‑guest; host view requires shared C‑bit{=}0 \\
 \hline
 
 \textbf{ret2spec \cite{maisuradze2018ret2spec}} &
 No &
 RSB-based speculative-execution &
 cross-process &
+RSB pollution; suitable return window; timer &
 Intel x86 &
 RSB stuffing, Safe-RET &
-Flush+Reload, Prime+Probe \\
+Flush+Reload, Prime+Probe &
+As above (shared C‑bit{=}0 for host‑visible channel) \\
 \hline
 
 \textbf{INCEPTION \cite{trujillo2023inception}} &
 No &
 Training in Transient Execution (end-to-end exploit) targeting the Return Stack Buffer &
 User $\rightarrow$ Kernel &
+Pre‑entry return‑prediction poisoning; early \texttt{ret} after entry; IBPB‑only; timer &
 AMD (Zen 1, Zen 2, Zen 3, Zen 4) &
 Safe-RET, IBPB (Zen 1, Zen 2 only) &
-Flush+Reload, Prime+Probe \\
+Flush+Reload, Prime+Probe &
+CC‑light: still leaks in‑core; host needs shared C‑bit{=}0 page \\
 \hline
 
 \textbf{RETBLEED \cite{wikner2022retbleed}} &
 No &
 Kernel-level speculative code execution targeting the Branch Target Buffer &
 Unprivileged User Process $\rightarrow$ Kernel &
+RSB underflow to BTB fallback (Intel); BTB precedence over RSB (AMD); deep call stacks (Intel); cross-privilege BTB poisoning &
 AMD (Zen 1, Zen 2), Intel (Kaby Lake, Coffee Lake) &
 Intel (eIBRS and IBRS), AMD (jmp2ret) &
-Flush+Reload, Prime+Probe \\
+Flush+Reload, Prime+Probe &
+Bypasses Retpoline; leaks arbitrary kernel memory; intra-guest leakage; host view requires shared side-channel \\
 \hline
 
 \textbf{PB-RRSBA \cite{wikner2025breaking}} &
 Yes &
 Exploit IP-based predictions of the Restricted RSB Alternate (RRSBA) predictor &
 Cross-process &
+RSB empty-state; IP-based RRSBA predictor active; IBPB execution; same-thread attacker/victim co-location &
 Intel (Golden Cove, Raptor Cove) &
 Enabling the RRSBA\_DIS\_U chicken bit &
-Flush+Reload \\
+Flush+Reload &
+Leaks from IBPB-protected suid processes; shared library mappings used for cross-process exfiltration \\
 \hline
 
 \textbf{PB-Inception \cite{wikner2025breaking}} &
 Yes &
 Variant of Inception attack targeting Return Stack Buffer predictions &
 Cross-process &
+IBPB-on-entry active; TTE/Phantom training pre-IBPB; RSB persistence post-IBPB (AMD Zen 1/2) &
 AMD (Zen 1, Zen 2) &
 RSB stuffing &
-Secret-dependent cache side channel \\
+Secret-dependent cache side channel &
+Bypasses kernel/hypervisor protection (VMExit); host observation requires shared C-bit=0 mapping \\
 \hline
 
 \textbf{PHANTOM \cite{wikner2023phantom}} &
 No &
 Confuse the CPU's branch prediction unit by using asymmetric combinations of training and victim instruction types &
 Execute unprivileged code on top of a recent Linux kernel &
+Speculation before instruction decode; cross-privilege BTB aliasing; physically contiguous huge pages for Prime+Probe &
 AMD (Zen 1, Zen 2, Zen 3, Zen 4) &
 SuppressBPOnNonBr (AMD MSR), AutoIBRS (AMD Zen 4), IBPB &
-Flush+Reload, Prime+Probe \\
+Flush+Reload, Prime+Probe &
+Bypasses AutoIBRS/SuppressBPOnNonBr; enables transient fetch/decode leaks; host visibility needs shared memory \\
 \hline
 
 \end{longtable}
@@ -390,13 +414,13 @@ Flush+Reload, Prime+Probe \\
 \endlastfoot
 
 \textbf{Spectre v1 (PHT) \cite{kocher2018spectre} (No)} &
-Same‑process; cross‑sandbox/JIT; sometimes cross‑process &
+Same‑process; cross‑sandbox /JIT; sometimes cross‑process &
 Intel (Ivy Bridge, Haswell, Skylake), AMD Ryzen, ARM cores (Samsung/Qualcomm mobile chips)&
 Bounds‑check bypass on mispredicted conditional; timer/eviction primitive &
 Bounds‑check hardening; compiler SLH; masking; LFENCE/speculation barriers (IBPB/RSB not primary) &
 Compiler flags (SLH); kernel hardening hooks; some trees expose \texttt{nospectre\_v1} &
 Yes; many PoCs since 2018 &
-Flush+Reload; Prime+Probe (varies) &
+Flush+Reload Prime+Probe (varies) &
 Intra‑VM leakage; host observation requires shared C‑bit{=}0 mapping \\
 \hline
 \textbf{Spectre v2 (BTB/indirect) \cite{kocher2018spectre} (No / IBPB mitigates)} &
@@ -411,7 +435,7 @@ Flush+Reload; Prime+Probe &
 Same as above; host timing needs shared C‑bit{=}0 page \\
 \hline
 \textbf{SpectreRSB (RSB) \cite{koruyeh2018spectrersb} (No)} &
-User$\rightarrow$kernel; cross‑thread/process on same core &
+User$\rightarrow$kernel; cross‑thread /process on same core &
 Intel (Haswell, Skylake, Xeon), any that uses an RSB&
 RSB underflow/overfill; entry without RSB sanitization; early \texttt{ret} reachable &
 RSB stuffing on entry; untrained‑return (Safe‑RET) thunks on entry &
@@ -518,7 +542,7 @@ rdseed adx smap clflushopt clwb sha_ni xsaveopt xsaves xgetbv1
 clzero xsaveerptr arat npt nrip_save umip sev sev-es
 \end{lstlisting}
 
-\subsubsection{Overview of the exploit flow}
+\subsubsection{Overview of the exploit flow}\label{sec:pb-inception-exploit-flow}
 \noindent\textbf{Attack flow.}
 Figure~\ref{fig:pb-inception-flow} shows the end-to-end PB-Inception workflow used in our artifact.
 (1) In guest user space, the attacker performs pre-IBPB training of the return predictor (Training in Transient Execution, TTE) using aliasing trampolines.
@@ -667,7 +691,7 @@ For reproducibility and easy migration to the appendix, we summarise the end-to-
 \label{sec:results}
 
 \subsection{What the PoC establishes}
-Our PoC demonstrates a \emph{constructive} post-IBPB Spectre primitive on AMD Zen~1(+)/2: return-target predictions mistrained in user mode survive a subsequent IBPB and speculatively steer the first \texttt{ret} in the kernel entry path into an attacker-chosen kernel gadget. The gadget encodes one secret byte per invocation into a 1\,MiB probe buffer with a one-hot cache footprint at offset \texttt{val $\ll$ 12}. Although we defer on-hardware measurements, the complete code path, control toggles, and covert-channel design constitute a falsifiable exploitation recipe whose predicted observables are listed below. This section reports component-level correctness, expected end-to-end behaviour and negative controls, based on the artifacts detailed in \S\ref{sec:method:pb-inception:overview}--\S\ref{sec:method:pb-inception:controls}.\cite{wikner2025breaking,trujillo2023inception,linux_srso_doc,linux_rsb_doc}
+Our PoC demonstrates a \emph{constructive} post-IBPB Spectre primitive on AMD Zen~1(+)/2: return-target predictions mistrained in user mode survive a subsequent IBPB and speculatively steer the first \texttt{ret} in the kernel entry path into an attacker-chosen kernel gadget. The gadget encodes one secret byte per invocation into a 1\,MiB probe buffer with a one-hot cache footprint at offset \texttt{val $\ll$ 12}. Although we defer on-hardware measurements, the complete code path, control toggles, and covert-channel design constitute a falsifiable exploitation recipe whose predicted observables are listed below. This section reports component-level correctness, expected end-to-end behaviour and negative controls, based on the artifacts detailed in \S\ref{sec:pb-inception-exploit-flow}--\S\ref{sec:method:pb-inception:controls}.\cite{wikner2025breaking,trujillo2023inception,linux_srso_doc,linux_rsb_doc}
 
 \subsection{Component-level results (static/constructive)}
 \paragraph{Kernel DC leak gadget (LKM).}
@@ -899,21 +923,19 @@ void *pbinc_create_trampolines(uint64_t gadget_addr) {
   \caption[Trampolines functionality]%
   {\textbf{Trampolines functionality}
    Schema showing the functionality of the return-address aliasing trampolines.  
-   A small but important part that's omitted in the schema is the piece of code shown below:  
+   A small but important part that's omitted in the schema is the piece of code shown below ~\ref{lst:slow-memory-map}  
    }
   \label{fig:pbinc_trampoline_functionality}
 
 \end{figure}
+\end{landscape}
 
-\begin{lstlisting}[language={[x86masm]Assembler}, caption={This part of the code allows the mapping of the memory to happen very slowly, so that it happens after the comparison with 0xdeadbeef and therefore it will jump to the call cascade.}, label={lst:slow-memory-map}]
+\begin{lstlisting}[language={[x86masm]Assembler}, caption={Slow predicate load: the load from \texttt{\_\_slow\_predicate\_ptr} delays branch resolution so the CPU follows a mispredicted backward conditional branch and transiently executes the call cascade.}, label={lst:slow-memory-map}]]
 mov  rdx, [rel __slow_predicate_ptr]  ; runtime: slow mapped memory
 mov  rax, [rdx]
 cmp  rax, 0xdeadbeef
 je   .speculative_call_cascade        ; backward Jcc (target above)
 \end{lstlisting}
-
-\end{landscape}
-
 
 \paragraph{Training-in-Transient-Execution (TTE) call cascade.}
 The assembly harness \texttt{pbinc\_entry} executes a forward skip, then a backward \texttt{JE} whose predicate is delayed by reading from \texttt{\_\_slow\_predicate\_ptr}. In the mispredicted path, it issues a loop of 64 \texttt{call} sites via \texttt{\_\_alias\_tbl[i]}; none of these calls retire architecturally. This strictly-transient cascade overflows and biases return prediction state without observable architectural side effects.\cite{trujillo2023inception}
@@ -1045,7 +1067,7 @@ SEV/SEV-ES ensures memory confidentiality at rest and in transit, it does not pr
 We plan on performing tests on physical AMD hardware. To build the environment we plan on using a Supermicro H12SSL-i mainboard, Micron 16GB DDR4-3200 2RX8 ECC RDIMM memory and AMD EPYC 7302P CPU for a total cost of around 1200 CHF. Once built, this will allow us to perform controlled testing and acquire quantitative data.
 
 \subsection{Summary}
-Even without hardware measurements, the PoC provides a complete, auditable chain from predictor poisoning (TTE) through a post-IBPB return hijack to a high-SNR cache channel, together with A/B controls that make the mechanism falsifiable. The security implication is sharp: on Zen~1/2, IBPB-on-entry alone is insufficient software must also sanitise return prediction state on privilege transitions or remove susceptible early returns. These statements follow directly from the code paths and the end-to-end harness described here and in \S\ref{sec:method:pb-inception:overview}--\S\ref{sec:method:pb-inception:controls}.\cite{wikner2025breaking,trujillo2023inception,linux_srso_doc,linux_rsb_doc}
+Even without hardware measurements, the PoC provides a complete, auditable chain from predictor poisoning (TTE) through a post-IBPB return hijack to a high-SNR cache channel, together with A/B controls that make the mechanism falsifiable. The security implication is sharp: on Zen~1/2, IBPB-on-entry alone is insufficient software must also sanitise return prediction state on privilege transitions or remove susceptible early returns. These statements follow directly from the code paths and the end-to-end harness described here and in \S\ref{sec:pb-inception-exploit-flow}--\S\ref{sec:method:pb-inception:controls}.\cite{wikner2025breaking,trujillo2023inception,linux_srso_doc,linux_rsb_doc}
 
 
 \section{Conclusion}
@@ -1090,6 +1112,17 @@ it builds/loads the kernel gadget LKM, compiles the user components (ASM, trampo
 builder, driver), wires sysfs, and launches the PoC pinned to a core. This listing is 
 intended to be executable as‑is on a suitable AMD Zen~1/2 platform under the conditions 
 outlined in the methodology and controls sections.
+
+\begin{landscape}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{pdfs/pbinc_driver_functionality.drawio.pdf}%
+  \caption[Driver functionality]%
+  {\textbf{Driver functionality}
+   Schema showing the functionality of the driver that connects all the components}
+  \label{fig:pbinc_driver_functionality}
+\end{figure}
+\end{landscape}
 
 \begin{lstlisting}[language=C,caption={User-space driver for PB-Inception: wires sysfs, builds aliasing trampolines, provisions slow predicate, and triggers the IBPB boundary via \texttt{pbinc\_entry()}.},label={lst:driver}]
 #define _GNU_SOURCE
@@ -1174,16 +1207,5 @@ int main(int argc, char **argv) {
     return 0;
 }
 \end{lstlisting}
-
-\begin{landscape}
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=\linewidth]{pdfs/pbinc_driver_functionality.drawio.pdf}%
-  \caption[Driver functionality]%
-  {\textbf{Driver functionality}
-   Schema showing the functionality of the driver that connects all the components}
-  \label{fig:pbinc_driver_functionality}
-\end{figure}
-\end{landscape}
 
 \end{document}
