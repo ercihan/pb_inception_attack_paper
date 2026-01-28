@@ -72,7 +72,7 @@
 
 \title{A practical PB Inception Attack and Implications for Confidential Computing}
 \author{Kaya Ercihan, Jonathan Müller}
-\date{23.12.2025}
+\date{06.02.2026}
 
 \begin{document}
 \bibliographystyle{IEEEtranS}  % IEEE, sorted
@@ -365,128 +365,50 @@ Bypasses AutoIBRS/SuppressBPOnNonBr; enables transient fetch/decode leaks; host 
 \setlength{\tabcolsep}{4pt}
 \renewcommand{\arraystretch}{1.15}
 
-\begin{longtable}{@{}%
-  P{0.10\linewidth} % Attack / Targeted structure (Post-IBPB?)
-  P{0.10\linewidth} % Attacker model / boundary
-  P{0.08\linewidth} % Target processor
-  P{0.13\linewidth} % Preconditions
-  P{0.16\linewidth} % Effective mitigations
-  P{0.15\linewidth} % OS/µcode knobs
-  P{0.08\linewidth} % Evidence / PoC
-  P{0.08\linewidth} % Side-channel
-  P{0.12\linewidth} % CC impact
-@{}}
-\caption{Related work overview by predictor target, boundary, preconditions, effective mitigations, OS/\,$\mu$code knobs, evidence, side channel, and CC impact. “Post‑IBPB?” indicates whether the path relies on prediction state persisting across an IBPB boundary.}
+\begin{longtable}{
+  P{3.2cm}  % Attack / Targeted structure (Post-IBPB?)
+  P{3.0cm}  % Attacker model / boundary
+  P{3.0cm}  % Preconditions   <-- this is the one that was overflowing
+  P{3.8cm}  % Effective mitigations
+  P{3.8cm}  % OS/μcode knobs
+  P{2.2cm}  % Side-channel
+  P{3.0cm}  % CC impact
+}
+
+\caption{Mitigation matrix by target structure, attacker boundary, preconditions, effective countermeasures, OS/,$\mu$code knobs, side channel, and CC (SEV/ES) impact.}
 \label{tab:related-work-overview}\\
 
 \toprule
 \textbf{Attack / Targeted structure (Post‑IBPB?)} &
 \textbf{Attacker model / boundary} &
-\textbf{Target processor} &
 \textbf{Preconditions} &
 \textbf{Effective mitigations (what actually stops it)} &
 \textbf{OS/\,$\mu$code knobs (Linux / CPUID)} &
-\textbf{Evidence / PoC} &
 \textbf{Side‑channel} &
 \textbf{ CC impact (SEV / ES)} \\
 \midrule
 \endfirsthead
 
-\multicolumn{8}{l}{\small\itshape Table \thetable\ (continued)}\\
-\toprule
-\textbf{Attack / Targeted structure (Post‑IBPB?)} &
-\textbf{Attacker model / boundary} &
-\textbf{Target processor} &
-\textbf{Preconditions} &
-\textbf{Effective mitigations (what actually stops it)} &
-\textbf{OS/\,$\mu$code knobs (Linux / CPUID)} &
-\textbf{Evidence / PoC} &
-\textbf{Side‑channel} &
-\textbf{ CC impact (SEV / ES)} \\
-\midrule
-\endhead
 
-\midrule
-\multicolumn{8}{r}{\small\itshape Continued on next page}
-\endfoot
+\hline
+\textbf{Generic mitigations (survey) \cite{kocher2018spectre,linux_srso_doc,linux_rsb_doc} (By variant)} &
+V1: same‑proc/ cross‑sandbox; V2: cross‑proc/ user$\rightarrow$kernel; Meltdown separate &
+V1: bounds‑check bypass; V2: indirect‑branch poisoning &
+V1: hardening, SLH, LFENCE; Meltdown: KPTI; V2: IBRS/IBPB/Retpoline (RSB only for returns) &
+Linux knobs above; compiler options; microcode (IBRS/IBPB) &
+Various (F+R, P+P, …) &
+CC‑light unaffected architecturally; shared mappings govern host visibility \\
 
-\bottomrule
-\endlastfoot
-
-\textbf{Spectre v1 (PHT) \cite{kocher2018spectre} (No)} &
-Same‑process; cross‑sandbox /JIT; sometimes cross‑process &
-Intel (Ivy Bridge, Haswell, Skylake), AMD Ryzen, ARM cores (Samsung/Qualcomm mobile chips)&
-Bounds‑check bypass on mispredicted conditional; timer/eviction primitive &
-Bounds‑check hardening; compiler SLH; masking; LFENCE/speculation barriers (IBPB/RSB not primary) &
-Compiler flags (SLH); kernel hardening hooks; some trees expose \texttt{nospectre\_v1} &
-Yes; many PoCs since 2018 &
-Flush+Reload Prime+Probe (varies) &
-Intra‑VM leakage; host observation requires shared C‑bit{=}0 mapping \\
-\hline
-\textbf{Spectre v2 (BTB/indirect) \cite{kocher2018spectre} (No / IBPB mitigates)} &
-Cross‑process; user$\rightarrow$kernel; cross‑VM variants &
-Intel (Ivy Bridge, Haswell, Skylake), AMD Ryzen, ARM cores (Samsung/Qualcomm mobile chips)&
-Indirect‑branch poisoning; suitable training; timer &
-IBRS, IBPB, STIBP; retpoline (RSB stuffing helps returns only) &
-\texttt{spectre\_v2=*}, \texttt{spectre\_v2\_user=
-prctl,ibpb}; CPUID: \texttt{ibrs}, \texttt{ibpb}, \texttt{stibp} &
-Yes; widely reproduced &
-Flush+Reload; Prime+Probe &
-Same as above; host timing needs shared C‑bit{=}0 page \\
-\hline
-\textbf{SpectreRSB (RSB) \cite{koruyeh2018spectrersb} (No)} &
-User$\rightarrow$kernel; cross‑thread /process on same core &
-Intel (Haswell, Skylake, Xeon), any that uses an RSB&
-RSB underflow/overfill; entry without RSB sanitization; early \texttt{ret} reachable &
-RSB stuffing on entry; untrained‑return (Safe‑RET) thunks on entry &
-\texttt{spec\_rstack\_overflow=
-safe-ret} (Linux); RSB clear/stuff on switch &
-Yes; public PoCs &
-Flush+Reload (typical) &
-Works intra‑guest; host view requires shared C‑bit{=}0 \\
-\hline
-\textbf{ret2spec (RSB) \cite{maisuradze2018ret2spec} (No)} &
-Same‑process and cross‑thread; user$\rightarrow$kernel variants &
-Intel x86&
-RSB pollution; suitable return window; timer &
-RSB stuffing; Safe‑RET thunks; remove early returns on entry path &
-\texttt{spec\_rstack\_overflow=
-safe-ret} (Linux) &
-Yes; PoC in paper &
-Flush+Reload &
-As above (shared C‑bit{=}0 for host‑visible channel) \\
-\hline
-\textbf{INCEPTION / SRSO / TTE \cite{trujillo2023inception} (Yes)} &
-User$\rightarrow$kernel; AMD Zen gens &
-AMD (Zen 1, Zen 2, Zen 3, Zen 4)&
-Pre‑entry return‑prediction poisoning; early \texttt{ret} after entry; IBPB‑only; timer &
-Untrained‑return / Safe‑RET (AMD \textit{JMP2RET}); entry sanitization; IBPB alone insufficient on Zen 1/2 &
-\texttt{spec\_rstack\_overflow=
-safe-ret}; vendor microcode; CPUID enumerates SRSO mitigations (where present) &
-Yes; PoCs and vendor guidance &
-Flush+Reload (typical) &
-CC‑light: still leaks in‑core; host needs shared C‑bit{=}0 page \\
 \hline
 \textbf{SRSO mitigation (Linux/vendor) \cite{linux_srso_doc,amd_srso_whitepaper} (Mitigation)} &
 N/A &
 N/A &
-N/A &
 Safe‑RET / untrained‑return thunks at entry; optional RSB stuffing; policy on IBPB use &
 \texttt{spec\_rstack\_overflow=
-\{safe-ret,ibpb,off\}}, \texttt{spectre\_v2\_user=prctl,ibpb}; CPUID per vendor &
-N/A (guidance) &
+\{safe-ret,ibpb,off\}}, \texttt{spectre\_v2\_user}
+\texttt{=prctl,ibpb}; CPUID per vendor &
 N/A &
 Prevents return‑hijack paths irrespective of CC \\
-\hline
-\textbf{Generic mitigations (survey) \cite{kocher2018spectre,linux_srso_doc,linux_rsb_doc} (By variant)} &
-V1: same‑proc/cross‑sandbox; V2: cross‑proc/user$\rightarrow$kernel; Meltdown separate &
-N/A &
-V1: bounds‑check bypass; V2: indirect‑branch poisoning &
-V1: hardening, SLH, LFENCE; Meltdown: KPTI; V2: IBRS/IBPB/Retpoline (RSB only for returns) &
-Linux knobs above; compiler options; microcode (IBRS/IBPB) &
-N/A (survey) &
-Various (F+R, P+P, …) &
-CC‑light unaffected architecturally; shared mappings govern host visibility \\
 
 \end{longtable}
 \end{small}
