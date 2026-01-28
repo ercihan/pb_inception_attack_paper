@@ -217,7 +217,7 @@ For AMD Zen, the return predictor remains a privileged choke point: pre-barrier 
   P{0.12\linewidth} %
   P{0.12\linewidth} %
 @{}}
-\caption{Related work overview. “Post‑IBPB?” indicates whether the path relies on prediction state persisting across an IBPB boundary.}
+\caption{Related work overview. “Post‑IBPB” indicates whether the path relies on prediction state persisting across an IBPB boundary.}
 \label{tab:related-work-overview}\\
 
 \toprule
@@ -379,7 +379,7 @@ Bypasses AutoIBRS/SuppressBPOnNonBr; enables transient fetch/decode leaks; host 
 \label{tab:related-work-overview}\\
 
 \toprule
-\textbf{Attack / Targeted structure (Post‑IBPB?)} &
+\textbf{Attack / Targeted structure} &
 \textbf{Attacker model / boundary} &
 \textbf{Preconditions} &
 \textbf{Effective mitigations (what actually stops it)} &
@@ -391,16 +391,21 @@ Bypasses AutoIBRS/SuppressBPOnNonBr; enables transient fetch/decode leaks; host 
 
 
 \hline
-\textbf{Generic mitigations (survey) \cite{kocher2018spectre,linux_srso_doc,linux_rsb_doc} (By variant)} &
-V1: same‑proc/ cross‑sandbox; V2: cross‑proc/ user$\rightarrow$kernel; Meltdown separate &
-V1: bounds‑check bypass; V2: indirect‑branch poisoning &
-V1: hardening, SLH, LFENCE; Meltdown: KPTI; V2: IBRS/IBPB/Retpoline (RSB only for returns) &
+\textbf{Generic mitigations \cite{kocher2018spectre,linux_srso_doc,linux_rsb_doc}} &
+V1: same‑proc/ cross‑sandbox
+V2: cross‑proc/ user$\rightarrow$kernel; Meltdown separate &
+V1: bounds‑check bypass
+
+V2: indirect‑ branch poisoning &
+V1: hardening, SLH, LFENCE; Meltdown: KPTI
+
+V2: IBRS/IBPB/Retpoline (RSB only for returns) &
 Linux knobs above; compiler options; microcode (IBRS/IBPB) &
 Various (F+R, P+P, …) &
 CC‑light unaffected architecturally; shared mappings govern host visibility \\
 
 \hline
-\textbf{SRSO mitigation (Linux/vendor) \cite{linux_srso_doc,amd_srso_whitepaper} (Mitigation)} &
+\textbf{SRSO mitigation \cite{linux_srso_doc,amd_srso_whitepaper}} &
 N/A &
 N/A &
 Safe‑RET / untrained‑return thunks at entry; optional RSB stuffing; policy on IBPB use &
